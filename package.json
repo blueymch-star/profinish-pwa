@@ -1,0 +1,18 @@
+{
+  "name": "profinish-pwa",
+  "version": "2.0.0",
+  "description": "iPhone 16 Pro 校園田徑終點攝影電子計時系統 PWA",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "pwa",
+    "photo-finish",
+    "track-and-field",
+    "slit-scan",
+    "webrtc"
+  ],
+  "author": "",
+  "license": "MIT"
+}

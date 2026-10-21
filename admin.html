@@ -1,0 +1,2357 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProFinish 電腦端賽事管理後台 · 檢錄排道與成績處理中心</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="shortcut icon" href="./favicon.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@500;700;800&display=swap');
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Microsoft JhengHei", sans-serif;
+      background-color: #060911;
+      color: #f8fafc;
+    }
+    .font-mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+    @media print {
+      body {
+        background: #ffffff !important;
+        color: #000000 !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .print-only {
+        display: block !important;
+      }
+      .print-card {
+        border: 1px solid #000 !important;
+        background: #fff !important;
+        color: #000 !important;
+        box-shadow: none !important;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Top Navigation Header -->
+  <header class="no-print bg-slate-900/95 border-b border-slate-800 px-6 py-3.5 sticky top-0 z-40 backdrop-blur">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-4">
+      <!-- Brand & Meet Title -->
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2.5">
+          <div class="w-9 h-9 rounded-xl bg-red-600 flex items-center justify-center font-black text-white text-lg shadow-lg shadow-red-600/30">
+            ⏱
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-black text-base tracking-tight text-white">ProFinish</span>
+              <span class="text-[11px] font-bold px-2 py-0.5 rounded bg-red-500/20 text-red-400 border border-red-500/30">電腦端賽事後台 v2.5</span>
+            </div>
+            <p class="text-[11px] text-slate-400">出賽檢錄編道 · 手機即時同步 · 完賽成績與晉級總表處理</p>
+          </div>
+        </div>
+
+        <div class="h-7 w-[1px] bg-slate-800 hidden md:block"></div>
+
+        <!-- Editable Meet Name -->
+        <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5">
+          <span class="text-xs text-slate-400">🏆 大會名稱：</span>
+          <input id="inputMeetTitle" type="text" value="2026 校園運動會田徑錦標賽"
+            onchange="adminApp.saveMeetToServer()"
+            class="bg-transparent text-sm font-bold text-white focus:outline-none focus:text-amber-300 w-56 sm:w-64" />
+        </div>
+      </div>
+
+      <!-- Live Sync Status & Active Heat Indicator -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3.5 py-1.5 rounded-xl">
+          <span id="sseStatusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="sseStatusText" class="text-xs font-medium text-slate-300">與終點手機即時連線中</span>
+        </div>
+
+        <div class="bg-red-950/50 border border-red-800/60 px-3.5 py-1.5 rounded-xl flex items-center gap-2">
+          <span class="text-xs text-red-300 font-semibold">📡 場上進行組別：</span>
+          <span id="activeHeatBanner" class="text-xs font-mono font-bold text-amber-300">第 1 組</span>
+        </div>
+
+        <a href="/index.html" target="_blank" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition flex items-center gap-1.5 border border-slate-700">
+          <span>📱</span>
+          <span>開啟計時畫面</span>
+        </a>
+
+        <button onclick="adminApp.exportAllCsv()" class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white transition flex items-center gap-1.5 shadow-lg shadow-emerald-600/20">
+          <span>📊</span>
+          <span>匯出全賽事 Excel (CSV)</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <div class="no-print flex-1 max-w-[1600px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-5 p-5">
+
+    <!-- LEFT SIDEBAR: Heats & Events List (3 cols) -->
+    <aside class="lg:col-span-3 flex flex-col gap-2.5 bg-slate-900/90 border border-slate-800 rounded-2xl p-4 h-[calc(100vh-105px)] sticky top-[85px]">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+        <div>
+          <h2 class="text-sm font-bold text-white flex items-center gap-1.5">
+            <span>🗂️</span>
+            <span>賽事組別列表</span>
+            <span id="filteredHeatsCountBadge" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">48組</span>
+          </h2>
+          <p class="text-[11px] text-slate-400 mt-0.5">支援依比賽日、年級、預決賽篩選</p>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button onclick="adminApp.openScheduleModal()" class="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 shadow" title="設定各年級項目比賽日期">
+            <span>📅</span>
+            <span>排定日期</span>
+          </button>
+          <button onclick="adminApp.addNewHeat()" class="px-2 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs flex items-center gap-0.5 shadow" title="新增單一組別">
+            <span>＋</span>
+            <span>新增</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Multi-dimensional Filters: Date / Stage / Grade / Search -->
+      <div class="flex flex-col gap-1.5 bg-slate-950/70 p-2 rounded-xl border border-slate-800/90">
+        <!-- 1. Date Filter -->
+        <div class="flex items-center gap-1.5">
+          <span class="text-[11px] text-slate-400 font-semibold whitespace-nowrap">📅 日期:</span>
+          <select id="filterDateSelect" onchange="adminApp.renderHeatsList()"
+            class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-amber-300 focus:outline-none focus:border-red-500">
+            <option value="ALL">全部日期 (顯示所有組別)</option>
+          </select>
+        </div>
+
+        <!-- 2. Stage Filter (全部 / 預賽 / 決賽) -->
+        <div class="grid grid-cols-3 gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+          <button id="btnStageALL" onclick="adminApp.setStageFilter('ALL')" class="py-1 rounded-md font-bold transition bg-red-600 text-white">全部賽別</button>
+          <button id="btnStagePRELIM" onclick="adminApp.setStageFilter('PRELIM')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">預賽</button>
+          <button id="btnStageFINAL" onclick="adminApp.setStageFilter('FINAL')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">🏆 決賽</button>
+        </div>
+
+        <!-- 3. Grade Filter (全部 / 六 / 五 / 四 / 三) -->
+        <div class="grid grid-cols-5 gap-1 bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+          <button id="btnGradeALL" onclick="adminApp.setGradeFilter('ALL')" class="py-1 rounded-md font-bold transition bg-slate-700 text-white">全年級</button>
+          <button id="btnGrade六年級" onclick="adminApp.setGradeFilter('六年級')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">六年級</button>
+          <button id="btnGrade五年級" onclick="adminApp.setGradeFilter('五年級')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">五年級</button>
+          <button id="btnGrade四年級" onclick="adminApp.setGradeFilter('四年級')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">四年級</button>
+          <button id="btnGrade三年級" onclick="adminApp.setGradeFilter('三年級')" class="py-1 rounded-md font-bold transition text-slate-400 hover:text-white">三年級</button>
+        </div>
+
+        <!-- 4. Keyword Search -->
+        <input id="searchHeatInput" type="text" placeholder="🔍 搜尋項目、班級或選手姓名..."
+          oninput="adminApp.renderHeatsList()"
+          class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-red-500" />
+      </div>
+
+      <!-- Sort Order Indicator & Renumber Button -->
+      <div class="flex items-center justify-between px-1 py-1 text-[11px] text-slate-400 border-b border-slate-800/60">
+        <span class="flex items-center gap-1 text-slate-400" title="已自動依比賽日期 ➜ 低年級 ➜ 女生優先排序">
+          <span>⚡</span>
+          <span>排序：日期 ➜ 低年級 ➜ 女生優先</span>
+        </span>
+        <button onclick="adminApp.promptRenumberHeats()" class="text-indigo-400 hover:text-indigo-300 font-bold hover:underline flex items-center gap-0.5" title="將組別編號重新依此排序指派為第1組至第N組">
+          <span>🔢</span> 依序重排組號
+        </button>
+      </div>
+
+      <!-- Scrollable Heats List -->
+      <div id="heatsListContainer" class="flex-1 overflow-y-auto flex flex-col gap-2 pr-1">
+        <!-- Populated by JS -->
+      </div>
+
+      <!-- Bottom Quick Batch Actions -->
+      <div class="pt-3 border-t border-slate-800 flex items-center justify-between gap-2">
+        <button onclick="adminApp.openBatchCsvModal()" class="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition flex items-center justify-center gap-1.5 border border-slate-700">
+          <span>📥</span>
+          <span>整批匯入名單 (CSV)</span>
+        </button>
+        <button onclick="adminApp.downloadTemplateCsv()" class="py-2 px-3 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white text-xs transition border border-slate-800" title="下載6道標準範本">
+          範本
+        </button>
+      </div>
+    </aside>
+
+    <!-- RIGHT MAIN AREA: 3 Core Tabs (9 cols) -->
+    <main class="lg:col-span-9 flex flex-col gap-4">
+
+      <!-- Mode Switch Tabs -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-1.5 flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-1.5">
+          <button id="tabBtnRoster" onclick="adminApp.switchTab('roster')"
+            class="px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 bg-red-600 text-white shadow">
+            <span>📋 1. 出賽名單與道次編排 (檢錄處)</span>
+          </button>
+          <button id="tabBtnResults" onclick="adminApp.switchTab('results')"
+            class="px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 text-slate-400 hover:text-white">
+            <span>⏱️ 2. 完賽成績與壓線圖審核 (終點判讀)</span>
+            <span id="badgeResultAlert" class="hidden w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          </button>
+          <button id="tabBtnStandings" onclick="adminApp.switchTab('standings')"
+            class="px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 text-slate-400 hover:text-white">
+            <span>🏆 3. 跨組總排名與晉級決賽處理 (紀錄組)</span>
+          </button>
+        </div>
+
+        <!-- Dispatch Current Selected Heat to Mobile Phone -->
+        <div class="flex items-center gap-2 pr-1">
+          <button onclick="adminApp.dispatchSelectedHeatToMobile()"
+            class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition flex items-center gap-1.5 shadow-lg shadow-amber-500/20 active:scale-95">
+            <span>📡</span>
+            <span>派送此組名單至終點手機 (設為場上當前組)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- =================================================================== -->
+      <!-- TAB 1: ROSTER & LANE ASSIGNMENT (出賽名單與 6 道次編排)                -->
+      <!-- =================================================================== -->
+      <section id="panelRoster" class="flex flex-col gap-4">
+        <!-- Heat Metadata Card -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4">
+          <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            <div class="flex items-center gap-3">
+              <span id="rosterHeatIdBadge" class="px-3 py-1.5 rounded-xl bg-red-600/20 border border-red-500/40 text-red-400 font-mono font-black text-base">
+                第 1 組
+              </span>
+              <div>
+                <h3 class="text-base font-bold text-white">組別項目、比賽日期與距離設定</h3>
+                <p class="text-xs text-slate-400">修改後自動儲存，並可一鍵同步至終點手機</p>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button onclick="adminApp.randomizeLanes()" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition flex items-center gap-1">
+                <span>🎲</span>
+                <span>隨機抽籤排道次</span>
+              </button>
+              <button onclick="adminApp.openQuickPasteModal()" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition flex items-center gap-1">
+                <span>📝</span>
+                <span>快速貼上本組名單</span>
+              </button>
+              <button onclick="adminApp.printSheet('checkIn')" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition flex items-center gap-1 shadow">
+                <span>🖨️</span>
+                <span>列印檢錄點名單</span>
+              </button>
+              <button onclick="adminApp.deleteCurrentHeat()" class="px-2.5 py-1.5 rounded-xl bg-slate-950 hover:bg-red-950 text-slate-400 hover:text-red-400 text-xs border border-slate-800 transition" title="刪除此組">
+                🗑️
+              </button>
+            </div>
+          </div>
+
+          <!-- Event Title, Round Name, Race Date, Distance Controls -->
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1 font-medium">競賽項目名稱 (相同項目可跨組總排名)：</label>
+              <input id="inputEventTitle" type="text" placeholder="例如：六年級男生組 100公尺"
+                onchange="adminApp.updateCurrentHeatMeta()"
+                class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-sm font-bold text-white focus:outline-none focus:border-red-500" />
+            </div>
+
+            <div>
+              <label class="block text-xs text-slate-400 mb-1 font-medium">賽別 / 組別說明：</label>
+              <input id="inputRoundName" type="text" placeholder="例如：預賽 第 1 組 / 決賽"
+                onchange="adminApp.updateCurrentHeatMeta()"
+                class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2 text-sm font-bold text-white focus:outline-none focus:border-red-500" />
+            </div>
+
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs text-slate-400 font-medium">📅 比賽日期：</label>
+                <button onclick="adminApp.applyDateToSameEventStage()" class="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold underline" title="將此日期套用到同項目所有同階段(預賽/決賽)組別">
+                  套用至同項目各組
+                </button>
+              </div>
+              <input id="inputRaceDate" type="date"
+                onchange="adminApp.updateCurrentHeatMeta()"
+                class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono font-bold text-amber-300 focus:outline-none focus:border-red-500" />
+            </div>
+
+            <div>
+              <label class="block text-xs text-slate-400 mb-1 font-medium">競賽距離 (連動手機聲速補償)：</label>
+              <div class="grid grid-cols-3 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button id="adminDist60" onclick="adminApp.setHeatDistance(60)" class="py-1.5 rounded-lg text-xs font-mono font-bold transition">60m</button>
+                <button id="adminDist100" onclick="adminApp.setHeatDistance(100)" class="py-1.5 rounded-lg text-xs font-mono font-bold transition">100m</button>
+                <button id="adminDist200" onclick="adminApp.setHeatDistance(200)" class="py-1.5 rounded-lg text-xs font-mono font-bold transition">200m</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6-Lane Roster Editor Table -->
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+          <div class="px-5 py-3.5 bg-slate-950/60 border-b border-slate-800 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-bold text-white">🏃‍♂️ 本組 1 ～ 6 道出賽選手編排表</span>
+              <span class="text-xs text-slate-400">(直接輸入即自動儲存並同步)</span>
+            </div>
+            <span id="saveIndicator" class="text-xs font-mono text-emerald-400">✓ 已自動儲存</span>
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 text-[11px] text-slate-400 bg-slate-950/40">
+                  <th class="py-3 px-4 w-24">道次</th>
+                  <th class="py-3 px-4">班級 / 單位</th>
+                  <th class="py-3 px-4">選手姓名</th>
+                  <th class="py-3 px-4 w-36">號碼衣 (顏色)</th>
+                  <th class="py-3 px-4 w-40">檢錄出賽狀態</th>
+                  <th class="py-3 px-4 w-28 text-center">調換道次</th>
+                </tr>
+              </thead>
+              <tbody id="rosterTableBody" class="divide-y divide-slate-800/70 text-sm">
+                <!-- Populated by JS (Lanes 1 to 6) -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================================== -->
+      <!-- TAB 2: POST-RACE RESULTS & PHOTO-FINISH PROOF (完賽成績與壓線圖審核)    -->
+      <!-- =================================================================== -->
+      <section id="panelResults" class="hidden flex-col gap-4">
+        <div class="grid grid-cols-1 xl:grid-cols-12 gap-4">
+
+          <!-- Left 7 Cols: Official Results Editor & Ranking -->
+          <div class="xl:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div>
+                <div class="flex items-center gap-2">
+                  <h3 id="resultsHeatTitle" class="text-base font-bold text-white">第 1 組 · 六年級男生組 100公尺</h3>
+                  <span id="resultsStatusBadge" class="text-xs px-2 py-0.5 rounded font-bold bg-slate-800 text-slate-300">待命</span>
+                </div>
+                <p class="text-xs text-slate-400 mt-0.5">終點手機判讀後會自動回傳成績，您亦可在此直接輸入或修正成績</p>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <button onclick="adminApp.markHeatOfficial()" class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition flex items-center gap-1 shadow">
+                  <span>✅</span>
+                  <span>審核確認 (正式公告)</span>
+                </button>
+                <button onclick="adminApp.printSheet('heatResult')" class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition flex items-center gap-1">
+                  <span>🖨️</span>
+                  <span>列印單組成績單</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Results Table (Lanes 1-6) -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr class="border-b border-slate-800 text-[11px] text-slate-400 bg-slate-950/50">
+                    <th class="py-2.5 px-3">道次</th>
+                    <th class="py-2.5 px-3">班級 / 姓名</th>
+                    <th class="py-2.5 px-3">千分秒 (原始)</th>
+                    <th class="py-2.5 px-3">官方成績 (0.01s進位)</th>
+                    <th class="py-2.5 px-3 text-center">名次</th>
+                    <th class="py-2.5 px-3">狀態/備註</th>
+                  </tr>
+                </thead>
+                <tbody id="resultsTableBody" class="divide-y divide-slate-800/70 text-sm">
+                  <!-- Populated by JS -->
+                </tbody>
+              </table>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-400 flex items-center justify-between">
+              <span>💡 <b>IAAF 田徑規則</b>：千分秒只要大於 0，自動無條件進位至下一百分秒（例：12.341s ➔ 12.35s）。修改成績後系統自動重排 1～6 名次。</span>
+              <button onclick="adminApp.clearHeatTimes()" class="text-red-400 hover:text-red-300 font-semibold whitespace-nowrap ml-3">清除本組成績</button>
+            </div>
+          </div>
+
+          <!-- Right 5 Cols: Photo-Finish Proof Image Viewer -->
+          <div class="xl:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-3">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+                  <span>📸</span>
+                  <span>終點攝影壓線判決證明圖</span>
+                </h3>
+                <p class="text-[11px] text-slate-400">由終點手機判讀台一鍵同步上傳</p>
+              </div>
+              <button id="btnDownloadProof" onclick="adminApp.downloadProofImage()" class="hidden px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs">
+                ⬇ 下載證明圖
+              </button>
+            </div>
+
+            <div id="proofImageContainer" class="flex-1 bg-slate-950 border border-slate-800 rounded-xl flex flex-col items-center justify-center min-h-[280px] overflow-hidden relative">
+              <div id="proofEmptyState" class="text-center p-6 text-slate-500">
+                <div class="text-3xl mb-2">🎞️</div>
+                <p class="text-xs font-medium text-slate-400">本組尚無終點壓線圖回傳</p>
+                <p class="text-[11px] text-slate-600 mt-1">在終點手機完成道次判讀後，點擊「📸 證明圖」或「☁️ 同步後台」即會自動顯示於此</p>
+              </div>
+              <img id="proofImagePreview" src="" alt="Photo Finish Proof" class="hidden w-full h-auto object-contain cursor-zoom-in" onclick="window.open(this.src, '_blank')" />
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- =================================================================== -->
+      <!-- TAB 3: OVERALL EVENT STANDINGS & FINALS GENERATOR (跨組總排名與晉級)   -->
+      <!-- =================================================================== -->
+      <section id="panelStandings" class="hidden flex-col gap-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col gap-4">
+          <div class="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            <div class="flex items-center gap-3">
+              <span class="text-2xl">🏆</span>
+              <div>
+                <h3 class="text-base font-bold text-white">同項目跨組總排名 · 預賽晉級決賽處理 (模式 B) ＆ 決賽總榜</h3>
+                <p class="text-xs text-slate-400">
+                  晉級規則：<b class="text-emerald-400">各組第 1 名保送 (Q)</b> ＋ <b class="text-amber-300">擇優 3 名 (q)</b> ＝ 共 6 名晉級 ｜
+                  決賽排道依預賽成績排入：<b class="text-sky-300 font-mono">第 4(紫)、5(橘)、6(綠)、3(黃)、2(藍)、1(紅) 道</b>
+                </p>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <label class="text-xs text-slate-300 font-semibold">選擇競賽項目：</label>
+              <select id="selectEventGroup" onchange="adminApp.renderEventStandings()"
+                class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-amber-300 focus:outline-none">
+                <!-- Populated dynamically with distinct eventTitle values -->
+              </select>
+
+              <!-- Switch Prelims vs Finals View in Tab 3 -->
+              <div class="inline-flex bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                <button id="btnStandingsPrelim" onclick="adminApp.setStandingsView('PRELIM')"
+                  class="px-3 py-1 rounded-lg font-bold transition bg-red-600 text-white">
+                  📊 預賽總榜與晉級
+                </button>
+                <button id="btnStandingsFinal" onclick="adminApp.setStandingsView('FINAL')"
+                  class="px-3 py-1 rounded-lg font-bold transition text-slate-400 hover:text-white">
+                  🏆 決賽成績榜單
+                </button>
+              </div>
+
+              <button onclick="adminApp.generateFinalsHeatFromTop6()"
+                class="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs transition flex items-center gap-1.5 shadow">
+                <span>⚡</span>
+                <span>依模式B產出本項「決賽組」(4-5-6-3-2-1道)</span>
+              </button>
+
+              <button onclick="adminApp.printSheet('eventStandings')"
+                class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition flex items-center gap-1.5 shadow">
+                <span>🖨️</span>
+                <span>列印榜單 / 獎狀清冊</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Combined Standings Table -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-left border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 text-xs text-slate-400 bg-slate-950/60">
+                  <th class="py-3 px-4 w-24 text-center">總名次</th>
+                  <th class="py-3 px-4">原屬組別 / 道次 (分組名次)</th>
+                  <th class="py-3 px-4">班級 / 單位</th>
+                  <th class="py-3 px-4">選手姓名</th>
+                  <th class="py-3 px-4">號碼衣</th>
+                  <th class="py-3 px-4">官方成績</th>
+                  <th class="py-3 px-4">千分秒詳情</th>
+                  <th class="py-3 px-4">晉級資格 / 決賽道次與號碼衣</th>
+                </tr>
+              </thead>
+              <tbody id="standingsTableBody" class="divide-y divide-slate-800/70 text-sm">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ======================================================================= -->
+  <!-- PRINT-ONLY OFFICIAL A4 REPORT LAYOUT (列印檢錄單 / 成績單專用)              -->
+  <!-- ======================================================================= -->
+  <div id="printArea" class="hidden print-only p-8 text-black bg-white">
+    <!-- Dynamically populated when printing -->
+  </div>
+
+  <!-- ======================================================================= -->
+  <!-- MODAL 1: QUICK PASTE ROSTER FOR CURRENT HEAT (快速貼上本組6道名單)          -->
+  <!-- ======================================================================= -->
+  <div id="quickPasteModal" class="no-print fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-5 flex flex-col gap-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-base text-white">📝 快速貼上本組 1～6 道選手名單</h3>
+        <button onclick="adminApp.closeQuickPasteModal()" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-slate-300 leading-relaxed">
+        請在下方每行輸入一位選手（第 1 行對應第 1 道，依此類推，共 6 行）。<br>
+        格式支援：<code class="text-amber-300 bg-slate-950 px-1.5 py-0.5 rounded">班級, 姓名, 號碼衣顏色</code>（可用逗號、空白或從 Excel 直接複製貼上）：
+      </p>
+      <textarea id="quickPasteTextarea" rows="7"
+        placeholder="六年一班, 陳小明, 紅&#10;六年二班, 林阿豪, 藍&#10;六年三班, 張志偉, 黃&#10;六年四班, 黃冠宇, 紫&#10;六年五班, 李宗翰, 橘&#10;六年六班, 王俊傑, 綠"
+        class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs font-mono text-white focus:outline-none focus:border-red-500"></textarea>
+      <div class="flex justify-end gap-2">
+        <button onclick="adminApp.closeQuickPasteModal()" class="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold">取消</button>
+        <button onclick="adminApp.applyQuickPaste()" class="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold">確認填入 1～6 道</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================================= -->
+  <!-- MODAL 2: BATCH CSV IMPORT (整批多組別 CSV 匯入)                            -->
+  <!-- ======================================================================= -->
+  <div id="batchCsvModal" class="no-print fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-5 flex flex-col gap-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-base text-white">📥 整批匯入全賽事出賽名單 (CSV)</h3>
+        <button onclick="adminApp.closeBatchCsvModal()" class="text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-xs text-slate-300 leading-relaxed">
+        支援從 Excel 另存之 UTF-8 CSV 檔案，可一次匯入所有組別與 1～6 道選手名單。<br>
+        欄位格式：<code class="text-amber-300">組別編號, 項目名稱, 賽別, 距離, 道次, 班級, 姓名, 號碼衣</code>
+      </p>
+      <input type="file" id="batchCsvFileInput" accept=".csv" onchange="adminApp.handleBatchCsvFile(event)"
+        class="text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-red-600 file:text-white hover:file:bg-red-500" />
+      <div class="flex justify-between items-center pt-2">
+        <button onclick="adminApp.downloadTemplateCsv()" class="text-xs text-sky-400 hover:underline">⬇ 下載標準 CSV 範本檔</button>
+        <button onclick="adminApp.closeBatchCsvModal()" class="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================================================================= -->
+  <!-- MODAL 3: SCHEDULE & FINALS MANAGER (各年級項目比賽日期自訂與預決賽排程)    -->
+  <!-- ======================================================================= -->
+  <div id="scheduleModal" class="no-print fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full max-h-[88vh] p-5 flex flex-col gap-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h3 class="font-bold text-base text-white flex items-center gap-2">
+            <span>📅</span>
+            <span>各年級競賽項目 · 預賽與決賽「比賽日期」排程管理</span>
+          </h3>
+          <p class="text-xs text-slate-400 mt-0.5">可針對單一年級、預賽/決賽整批設定日期，或逐一為每個項目設定不同比賽日</p>
+        </div>
+        <button onclick="adminApp.closeScheduleModal()" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+
+      <!-- Quick Batch Date Bar -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <span class="font-bold text-slate-300">⚡ 快速批次排定日期：</span>
+          <select id="batchTargetGrade" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-bold">
+            <option value="ALL">全部年級</option>
+            <option value="六年級">六年級</option>
+            <option value="五年級">五年級</option>
+            <option value="四年級">四年級</option>
+            <option value="三年級">三年級</option>
+          </select>
+          <select id="batchTargetStage" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-amber-300 font-bold">
+            <option value="PRELIM">預賽組別</option>
+            <option value="FINAL">決賽組別</option>
+            <option value="ALL">預賽＋決賽</option>
+          </select>
+          <input type="date" id="batchTargetDate" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-emerald-400 font-mono font-bold" />
+          <button onclick="adminApp.applyBatchScheduleDate()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold transition shadow">
+            套用批次日期
+          </button>
+        </div>
+
+        <button onclick="adminApp.ensureAllFinalsHeatsCreated()" class="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-bold text-xs transition flex items-center gap-1">
+          <span>🏆</span>
+          <span>一鍵預建全 16 項「決賽組」框架</span>
+        </button>
+      </div>
+
+      <!-- Per-Event Date Table -->
+      <div class="flex-1 overflow-y-auto border border-slate-800 rounded-xl">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead class="sticky top-0 bg-slate-950 text-slate-400 border-b border-slate-800 z-10">
+            <tr>
+              <th class="py-2.5 px-4">年級 / 競賽項目</th>
+              <th class="py-2.5 px-3 text-center">距離</th>
+              <th class="py-2.5 px-4">📊 預賽組數與比賽日期</th>
+              <th class="py-2.5 px-4">🏆 決賽組狀態與比賽日期</th>
+            </tr>
+          </thead>
+          <tbody id="scheduleTableBody" class="divide-y divide-slate-800/70">
+            <!-- Populated by JS -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex justify-between items-center pt-2 border-t border-slate-800">
+        <span class="text-xs text-slate-400">💡 提示：設定完成後，左側列表即可直接用「📅 日期」過濾出當天要跑的組別！</span>
+        <button onclick="adminApp.closeScheduleModal()" class="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow">
+          ✓ 完成並儲存排程
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const LANE_COLORS = [
+      'bg-red-600 text-white',
+      'bg-blue-600 text-white',
+      'bg-yellow-400 text-slate-950 font-bold',
+      'bg-purple-600 text-white',
+      'bg-orange-500 text-white',
+      'bg-emerald-600 text-white'
+    ];
+    const LANE_COLOR_NAMES = ['紅', '藍', '黃', '紫', '橘', '綠'];
+    // 決賽道次編排順序：依預賽成績由快到慢排入「4、5、6、3、2、1 道」
+    const FINALS_LANE_ORDER = [4, 5, 6, 3, 2, 1];
+
+    class ProFinishAdmin {
+      constructor() {
+        this.meetData = {
+          meetTitle: '2026 校園運動會田徑錦標賽',
+          activeHeatId: 1,
+          heats: []
+        };
+        this.selectedHeatId = 1;
+        this.selectedHeatUid = null;
+        this.currentTab = 'roster'; // 'roster' | 'results' | 'standings'
+        this.stageFilter = 'ALL';   // 'ALL' | 'PRELIM' | 'FINAL'
+        this.gradeFilter = 'ALL';   // 'ALL' | '六年級' | '五年級' | '四年級' | '三年級'
+        this.standingsView = 'PRELIM'; // 'PRELIM' | 'FINAL'
+        this.init();
+      }
+
+      ensureHeatUids() {
+        if (!this.meetData || !Array.isArray(this.meetData.heats)) return;
+        this.meetData.heats.forEach((h, idx) => {
+          if (!h.uid) {
+            const d = (h.raceDate || 'nodate').replace(/-/g, '');
+            h.uid = `heat_${d}_${h.id}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
+          }
+        });
+      }
+
+      isFinalsHeat(heat) {
+        return Boolean(heat && heat.roundName && heat.roundName.includes('決賽'));
+      }
+
+      async init() {
+        await this.fetchMeetFromServer();
+        this.connectSSE();
+        this.renderAll();
+      }
+
+      async fetchMeetFromServer() {
+        try {
+          const res = await fetch('/api/meet');
+          if (res.ok) {
+            this.meetData = await res.json();
+            if (!this.meetData.heats || this.meetData.heats.length === 0) return;
+            this.ensureHeatUids();
+            if (this.selectedHeatUid) {
+              const sel = this.meetData.heats.find(h => h.uid === this.selectedHeatUid);
+              if (sel) {
+                this.selectedHeatId = sel.id;
+              } else {
+                this.selectedHeatUid = this.meetData.heats[0].uid;
+                this.selectedHeatId = this.meetData.heats[0].id;
+              }
+            } else if (!this.meetData.heats.find(h => h.id === this.selectedHeatId)) {
+              this.selectedHeatId = this.meetData.activeHeatId || this.meetData.heats[0].id;
+              const cur = this.meetData.heats.find(h => h.id === this.selectedHeatId) || this.meetData.heats[0];
+              this.selectedHeatUid = cur.uid;
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load meet data:', err);
+        }
+      }
+
+      connectSSE() {
+        const dot = document.getElementById('sseStatusDot');
+        const txt = document.getElementById('sseStatusText');
+        const es = new EventSource('/api/events');
+
+        es.onopen = () => {
+          dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
+          txt.textContent = '與終點手機即時同步連線中';
+        };
+
+        es.onmessage = async (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'heat_result_updated') {
+              await this.fetchMeetFromServer();
+              this.renderAll();
+              const badge = document.getElementById('badgeResultAlert');
+              if (badge) badge.classList.remove('hidden');
+            } else if (msg.type === 'meet_updated' || msg.type === 'active_heat_changed') {
+              await this.fetchMeetFromServer();
+              this.renderAll();
+            }
+          } catch (e) {}
+        };
+
+        es.onerror = () => {
+          dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+          txt.textContent = '重新連線伺服器中...';
+        };
+      }
+
+      async saveMeetToServer() {
+        const ind = document.getElementById('saveIndicator');
+        if (ind) {
+          ind.textContent = '⏳ 儲存中...';
+          ind.className = 'text-xs font-mono text-amber-400';
+        }
+        this.meetData.meetTitle = document.getElementById('inputMeetTitle').value || '2026 校園運動會田徑錦標賽';
+        this.ensureHeatUids();
+
+        try {
+          await fetch('/api/meet', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.meetData)
+          });
+          if (ind) {
+            ind.textContent = '✓ 已自動儲存並同步';
+            ind.className = 'text-xs font-mono text-emerald-400';
+          }
+        } catch (err) {
+          if (ind) {
+            ind.textContent = '⚠️ 儲存失敗';
+            ind.className = 'text-xs font-mono text-red-400';
+          }
+        }
+      }
+
+      getSelectedHeat() {
+        if (!this.meetData || !this.meetData.heats || this.meetData.heats.length === 0) return null;
+        if (this.selectedHeatUid) {
+          const found = this.meetData.heats.find(h => h.uid === this.selectedHeatUid);
+          if (found) return found;
+        }
+        return this.meetData.heats.find(h => h.id === this.selectedHeatId) || this.meetData.heats[0];
+      }
+
+      switchTab(tab) {
+        this.currentTab = tab;
+        const tabs = ['roster', 'results', 'standings'];
+        const btnIds = { roster: 'tabBtnRoster', results: 'tabBtnResults', standings: 'tabBtnStandings' };
+        const panelIds = { roster: 'panelRoster', results: 'panelResults', standings: 'panelStandings' };
+
+        tabs.forEach(t => {
+          const btn = document.getElementById(btnIds[t]);
+          const panel = document.getElementById(panelIds[t]);
+          if (t === tab) {
+            btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 bg-red-600 text-white shadow';
+            panel.classList.remove('hidden');
+            panel.classList.add('flex');
+          } else {
+            btn.className = 'px-4 py-2 rounded-xl font-bold text-xs transition flex items-center gap-2 text-slate-400 hover:text-white';
+            panel.classList.add('hidden');
+            panel.classList.remove('flex');
+          }
+        });
+
+        if (tab === 'results') {
+          document.getElementById('badgeResultAlert')?.classList.add('hidden');
+        }
+        this.renderAll();
+      }
+
+      selectHeat(heatId, heatUid) {
+        this.selectedHeatId = heatId;
+        this.selectedHeatUid = heatUid || null;
+        this.renderAll();
+      }
+
+      setStageFilter(stage) {
+        this.stageFilter = stage;
+        ['ALL', 'PRELIM', 'FINAL'].forEach(s => {
+          const btn = document.getElementById(`btnStage${s}`);
+          if (btn) {
+            btn.className = (s === stage)
+              ? 'py-1 rounded-md font-bold transition bg-red-600 text-white shadow'
+              : 'py-1 rounded-md font-bold transition text-slate-400 hover:text-white';
+          }
+        });
+        this.renderHeatsList();
+      }
+
+      setGradeFilter(grade) {
+        this.gradeFilter = grade;
+        ['ALL', '六年級', '五年級', '四年級', '三年級'].forEach(g => {
+          const btn = document.getElementById(`btnGrade${g}`);
+          if (btn) {
+            btn.className = (g === grade)
+              ? 'py-1 rounded-md font-bold transition bg-slate-700 text-white shadow'
+              : 'py-1 rounded-md font-bold transition text-slate-400 hover:text-white';
+          }
+        });
+        this.renderHeatsList();
+      }
+
+      getGradeOrder(title) {
+        if (!title) return 99;
+        if (title.includes('一年級') || title.includes('1年級')) return 1;
+        if (title.includes('二年級') || title.includes('2年級')) return 2;
+        if (title.includes('三年級') || title.includes('3年級')) return 3;
+        if (title.includes('四年級') || title.includes('4年級')) return 4;
+        if (title.includes('五年級') || title.includes('5年級')) return 5;
+        if (title.includes('六年級') || title.includes('6年級')) return 6;
+        if (title.includes('七年級') || title.includes('7年級')) return 7;
+        if (title.includes('八年級') || title.includes('8年級')) return 8;
+        if (title.includes('九年級') || title.includes('9年級')) return 9;
+        return 50;
+      }
+
+      getGenderOrder(title) {
+        if (!title) return 99;
+        // 女生排在男生前面，先進行
+        if (title.includes('女')) return 1;
+        if (title.includes('男')) return 2;
+        return 3;
+      }
+
+      getStageOrder(roundName) {
+        if (!roundName) return 1;
+        // 預賽先進行，決賽後進行
+        if (roundName.includes('預賽')) return 1;
+        if (roundName.includes('準決賽') || roundName.includes('複賽')) return 2;
+        if (roundName.includes('決賽')) return 3;
+        return 1;
+      }
+
+      getHeatNumber(roundName, id) {
+        if (roundName) {
+          const match = roundName.match(/第\s*(\d+)\s*組/);
+          if (match) return parseInt(match[1], 10);
+        }
+        return typeof id === 'number' ? id : 1;
+      }
+
+      compareHeatsBySchedule(a, b) {
+        // 1. 比賽日期由先到後 (未排日期放最後)
+        const dateA = a.raceDate && a.raceDate.trim() ? a.raceDate.trim() : '9999-99-99';
+        const dateB = b.raceDate && b.raceDate.trim() ? b.raceDate.trim() : '9999-99-99';
+        if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+        // 2. 年級低的排在前面，先進行
+        const gradeA = this.getGradeOrder(a.eventTitle);
+        const gradeB = this.getGradeOrder(b.eventTitle);
+        if (gradeA !== gradeB) return gradeA - gradeB;
+
+        // 3. 女生排在男生前面，先進行
+        const genderA = this.getGenderOrder(a.eventTitle);
+        const genderB = this.getGenderOrder(b.eventTitle);
+        if (genderA !== genderB) return genderA - genderB;
+
+        // 4. 短距離先進行 (60m -> 100m -> 200m)
+        const distA = a.distance || 0;
+        const distB = b.distance || 0;
+        if (distA !== distB) return distA - distB;
+
+        // 5. 預賽先進行，決賽後進行
+        const stageA = this.getStageOrder(a.roundName);
+        const stageB = this.getStageOrder(b.roundName);
+        if (stageA !== stageB) return stageA - stageB;
+
+        // 6. 分組依序 (第1組 -> 第2組 -> 第3組)
+        const heatNumA = this.getHeatNumber(a.roundName, a.id);
+        const heatNumB = this.getHeatNumber(b.roundName, b.id);
+        if (heatNumA !== heatNumB) return heatNumA - heatNumB;
+
+        return (a.id || 0) - (b.id || 0);
+      }
+
+      sortHeatsBySchedule(reorderIds = false) {
+        if (!this.meetData || !this.meetData.heats) return;
+        this.meetData.heats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+
+        if (reorderIds) {
+          this.meetData.heats.forEach((h, idx) => {
+            h.id = idx + 1;
+          });
+          if (this.selectedHeatId) {
+            const sel = this.meetData.heats.find(h => h.id === this.selectedHeatId);
+            if (!sel) this.selectedHeatId = this.meetData.heats[0]?.id || 1;
+          }
+        }
+      }
+
+      promptRenumberHeats() {
+        this.ensureHeatUids();
+        const dateFilter = document.getElementById('filterDateSelect')?.value || 'ALL';
+
+        // 1. 如果已篩選特定比賽日期：僅重排當天組號，預設從當天第 1 組開始編號
+        if (dateFilter !== 'ALL' && dateFilter !== 'UNSET') {
+          const dayHeats = this.meetData.heats.filter(h => (h.raceDate || '').trim() === dateFilter);
+          if (dayHeats.length === 0) {
+            alert(`日期「${dateFilter}」目前無任何組別！`);
+            return;
+          }
+
+          const input = prompt(
+            `【依序重排「${dateFilter}」當天賽程組號】\n\n` +
+            `目前已篩選比賽日期：${dateFilter}\n` +
+            `當天共有 ${dayHeats.length} 組賽事。\n\n` +
+            `系統將依照「低年級 ➜ 女生優先 ➜ 短距離先跑 ➜ 預賽先進行」的正式競賽順序排定。\n` +
+            `請輸入當天的「起始組號」（預設為 1，即從當天第 1 組開始排）：`,
+            '1'
+          );
+          if (input === null) return;
+          const startNum = parseInt(input, 10);
+          if (isNaN(startNum) || startNum < 1) {
+            alert('請輸入大於或等於 1 的有效正整數！');
+            return;
+          }
+
+          dayHeats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+          dayHeats.forEach((h, idx) => {
+            h.id = startNum + idx;
+          });
+
+          this.sortHeatsBySchedule(false);
+          this.saveMeetToServer();
+          this.renderAll();
+          alert(`✓ 已成功將「${dateFilter}」當天共 ${dayHeats.length} 組賽事重新依序編號為：\n第 ${startNum} 組 ～ 第 ${startNum + dayHeats.length - 1} 組！`);
+          return;
+        }
+
+        // 2. 如果篩選未排定日期的組別
+        if (dateFilter === 'UNSET') {
+          const unsetHeats = this.meetData.heats.filter(h => !h.raceDate || !h.raceDate.trim());
+          if (unsetHeats.length === 0) {
+            alert('目前無「未排定日期」的組別！');
+            return;
+          }
+          const input = prompt(
+            `【依序重排「未排定日期」組別組號】\n\n` +
+            `目前篩選未排定日期的組別共 ${unsetHeats.length} 組。\n` +
+            `請輸入起始組號（預設為 1）：`,
+            '1'
+          );
+          if (input === null) return;
+          const startNum = parseInt(input, 10);
+          if (isNaN(startNum) || startNum < 1) {
+            alert('請輸入有效正整數！');
+            return;
+          }
+          unsetHeats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+          unsetHeats.forEach((h, idx) => {
+            h.id = startNum + idx;
+          });
+          this.sortHeatsBySchedule(false);
+          this.saveMeetToServer();
+          this.renderAll();
+          alert(`✓ 已成功重排未排定日期共 ${unsetHeats.length} 組賽事組號！`);
+          return;
+        }
+
+        // 3. 顯示全部日期：重排全大會所有組別
+        const input = prompt(
+          `【重新編排「全大會全部賽程」之組別編號】\n\n` +
+          `目前顯示「全部日期」，全大會共包含 ${this.meetData.heats.length} 組賽事。\n\n` +
+          `系統將依照「比賽日期 ➜ 低年級 ➜ 女生優先 ➜ 預賽先進行」全大會順序重排。\n` +
+          `請輸入全大會起始組號（預設為 1，即編號至第 ${this.meetData.heats.length} 組）：\n\n` +
+          `（💡 提示：若您想將「某一天」的賽事從第 1 組開始排，請先在上方「📅 比賽日期」下拉選單選取該日期後再按此鈕）`,
+          '1'
+        );
+        if (input === null) return;
+        const startNum = parseInt(input, 10);
+        if (isNaN(startNum) || startNum < 1) {
+          alert('請輸入有效正整數！');
+          return;
+        }
+        this.meetData.heats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+        this.meetData.heats.forEach((h, idx) => {
+          h.id = startNum + idx;
+        });
+        this.saveMeetToServer();
+        this.renderAll();
+        alert(`✓ 已成功將全大會 ${this.meetData.heats.length} 組賽事重新依序編號為：\n第 ${startNum} 組 ～ 第 ${startNum + this.meetData.heats.length - 1} 組！`);
+      }
+
+      populateDateFilter() {
+        const sel = document.getElementById('filterDateSelect');
+        if (!sel) return;
+        const prev = sel.value || 'ALL';
+
+        const dateCounts = {};
+        let unsetCount = 0;
+        this.meetData.heats.forEach(h => {
+          if (h.raceDate && h.raceDate.trim()) {
+            const d = h.raceDate.trim();
+            dateCounts[d] = (dateCounts[d] || 0) + 1;
+          } else {
+            unsetCount++;
+          }
+        });
+
+        const sortedDates = Object.keys(dateCounts).sort();
+        sel.innerHTML = `<option value="ALL">全部日期 (共 ${this.meetData.heats.length} 組)</option>`;
+        sortedDates.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d;
+          opt.textContent = `📅 ${d} (${dateCounts[d]} 組)`;
+          sel.appendChild(opt);
+        });
+        if (unsetCount > 0) {
+          const opt = document.createElement('option');
+          opt.value = 'UNSET';
+          opt.textContent = `⏳ 未排定日期 (${unsetCount} 組)`;
+          sel.appendChild(opt);
+        }
+
+        if ([...sel.options].some(o => o.value === prev)) {
+          sel.value = prev;
+        } else {
+          sel.value = 'ALL';
+        }
+      }
+
+      renderAll() {
+        document.getElementById('inputMeetTitle').value = this.meetData.meetTitle || '2026 校園運動會田徑錦標賽';
+
+        const activeHeat = this.meetData.heats.find(h => h.id === this.meetData.activeHeatId);
+        const banner = document.getElementById('activeHeatBanner');
+        if (banner && activeHeat) {
+          banner.textContent = `第 ${activeHeat.id} 組 (${activeHeat.eventTitle} · ${activeHeat.roundName || ''})`;
+        }
+
+        this.populateDateFilter();
+        this.renderHeatsList();
+        this.renderRosterEditor();
+        this.renderResultsEditor();
+        this.populateEventSelector();
+        this.renderEventStandings();
+      }
+
+      renderHeatsList() {
+        const container = document.getElementById('heatsListContainer');
+        const q = (document.getElementById('searchHeatInput')?.value || '').trim().toLowerCase();
+        const dateFilter = document.getElementById('filterDateSelect')?.value || 'ALL';
+        container.innerHTML = '';
+
+        // Auto sort heats by schedule order: Date -> Low Grade -> Girls First
+        this.sortHeatsBySchedule(false);
+
+        let visibleCount = 0;
+        let lastDateKey = null;
+
+        this.meetData.heats.forEach(heat => {
+          const isFinal = this.isFinalsHeat(heat);
+
+          // 1. Date filter
+          if (dateFilter !== 'ALL') {
+            if (dateFilter === 'UNSET') {
+              if (heat.raceDate && heat.raceDate.trim()) return;
+            } else {
+              if ((heat.raceDate || '').trim() !== dateFilter) return;
+            }
+          }
+
+          // 2. Stage filter
+          if (this.stageFilter === 'PRELIM' && isFinal) return;
+          if (this.stageFilter === 'FINAL' && !isFinal) return;
+
+          // 3. Grade filter
+          if (this.gradeFilter !== 'ALL') {
+            if (!(heat.eventTitle || '').includes(this.gradeFilter)) return;
+          }
+
+          // 4. Keyword search
+          if (q) {
+            const matchMeta = `${heat.id} ${heat.eventTitle} ${heat.roundName} ${heat.raceDate || ''}`.toLowerCase().includes(q);
+            const matchRunner = heat.lanes.some(l => `${l.grade} ${l.name} ${l.bib}`.toLowerCase().includes(q));
+            if (!matchMeta && !matchRunner) return;
+          }
+
+          visibleCount++;
+
+          // Visual Date Separator Header if date changed and showing ALL dates
+          const currentDateKey = heat.raceDate && heat.raceDate.trim() ? heat.raceDate.trim() : 'UNSET';
+          if (dateFilter === 'ALL' && !q && this.stageFilter === 'ALL' && this.gradeFilter === 'ALL') {
+            if (currentDateKey !== lastDateKey) {
+              lastDateKey = currentDateKey;
+              const dateSep = document.createElement('div');
+              dateSep.className = 'sticky top-0 z-10 py-1 px-2.5 my-1 rounded-lg bg-slate-900/95 backdrop-blur border border-indigo-900/60 flex items-center justify-between text-[11px] shadow-sm';
+              dateSep.innerHTML = `
+                <span class="font-bold text-indigo-300 flex items-center gap-1.5">
+                  <span>📅</span> ${currentDateKey === 'UNSET' ? '未排定比賽日期之組別' : `比賽日：${currentDateKey}`}
+                </span>
+                <span class="text-[10px] font-mono text-slate-400">低年級 ➜ 女生優先</span>
+              `;
+              container.appendChild(dateSep);
+            }
+          }
+
+          const isSelected = this.selectedHeatUid ? (heat.uid === this.selectedHeatUid) : (heat.id === this.selectedHeatId);
+          const isActive = (this.meetData.activeHeatUid && heat.uid) ? (heat.uid === this.meetData.activeHeatUid) : (heat.id === this.meetData.activeHeatId);
+          const finishedCount = heat.lanes.filter(l => l.officialTime).length;
+          const activeRunnersCount = heat.lanes.filter(l => l.name && !l.name.startsWith('選手')).length;
+
+          let statusBadge = `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">待命</span>`;
+          if (heat.status === 'official') {
+            statusBadge = `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-700/50">✓ 已公告 (${finishedCount}人)</span>`;
+          } else if (finishedCount > 0 || heat.status === 'finished') {
+            statusBadge = `<span class="text-[10px] px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-700/50">已完賽 (${finishedCount}人)</span>`;
+          }
+
+          const dateLabel = heat.raceDate
+            ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-950/90 text-indigo-300 border border-indigo-700/50">📅 ${heat.raceDate.slice(5).replace('-', '/')}</span>`
+            : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-900 text-slate-500">未排日期</span>`;
+
+          const stagePill = isFinal
+            ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">🏆 ${heat.roundName}</span>`
+            : `<span class="text-[11px] text-slate-400">${heat.roundName || ''}</span>`;
+
+          const card = document.createElement('div');
+          card.onclick = () => this.selectHeat(heat.id, heat.uid);
+          card.className = `p-3 rounded-xl border transition cursor-pointer flex flex-col gap-1.5 ${
+            isSelected
+              ? 'bg-slate-800/90 border-red-500 shadow-md'
+              : isFinal
+                ? 'bg-amber-950/15 border-amber-800/50 hover:border-amber-600/60'
+                : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700'
+          }`;
+
+          card.innerHTML = `
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="font-mono font-black text-xs px-2 py-0.5 rounded ${isSelected ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'}">
+                  第 ${heat.id} 組
+                </span>
+                <span class="font-mono text-[11px] text-amber-400 font-bold">${heat.distance}m</span>
+                ${dateLabel}
+                ${isActive ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">📡 場上</span>' : ''}
+              </div>
+              ${statusBadge}
+            </div>
+            <div class="text-xs font-bold text-white truncate">${heat.eventTitle || '未命名項目'}</div>
+            <div class="text-[11px] text-slate-400 flex items-center justify-between">
+              ${stagePill}
+              <span class="font-mono text-[10px] text-slate-500">${activeRunnersCount} 人編排</span>
+            </div>
+          `;
+          container.appendChild(card);
+        });
+
+        const countBadge = document.getElementById('filteredHeatsCountBadge');
+        if (countBadge) {
+          countBadge.textContent = `${visibleCount}/${this.meetData.heats.length}組`;
+        }
+
+        if (visibleCount === 0) {
+          container.innerHTML = `<div class="py-10 text-center text-xs text-slate-500">無符合篩選條件的賽事組別</div>`;
+        }
+      }
+
+      renderRosterEditor() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+
+        document.getElementById('rosterHeatIdBadge').textContent = `第 ${heat.id} 組`;
+        document.getElementById('inputEventTitle').value = heat.eventTitle || '';
+        document.getElementById('inputRoundName').value = heat.roundName || '';
+        document.getElementById('inputRaceDate').value = heat.raceDate || '';
+
+        [60, 100, 200].forEach(d => {
+          const btn = document.getElementById(`adminDist${d}`);
+          if (btn) {
+            btn.className = (heat.distance === d)
+              ? 'py-1.5 rounded-lg text-xs font-mono font-bold transition bg-red-600 text-white shadow'
+              : 'py-1.5 rounded-lg text-xs font-mono font-bold transition text-slate-400 hover:text-white';
+          }
+        });
+
+        // Ensure 6 lanes exist with standard vest colors
+        while (heat.lanes.length < 6) {
+          const n = heat.lanes.length + 1;
+          heat.lanes.push({
+            lane: n,
+            grade: '',
+            name: '',
+            bib: LANE_COLOR_NAMES[n - 1],
+            rawTime: null,
+            officialTime: null,
+            rank: '-',
+            status: 'OK'
+          });
+        }
+        heat.lanes = heat.lanes.slice(0, 6);
+
+        const tbody = document.getElementById('rosterTableBody');
+        tbody.innerHTML = '';
+
+        heat.lanes.forEach((l, idx) => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/40 transition';
+          const prelimHint = l.prelimTime ? `<span class="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-sky-300" title="預賽成績與晉級方式">${l.qualifyType || 'Q'}:${l.prelimTime}s</span>` : '';
+          tr.innerHTML = `
+            <td class="py-2.5 px-4">
+              <span class="inline-flex items-center justify-center px-2.5 py-1 rounded-lg font-mono font-black text-xs ${LANE_COLORS[idx]}">
+                第 ${l.lane} 道 (${LANE_COLOR_NAMES[idx]})
+              </span>
+            </td>
+            <td class="py-2.5 px-4">
+              <input type="text" value="${l.grade || ''}" placeholder="例：六甲"
+                onchange="adminApp.updateLaneField(${idx}, 'grade', this.value)"
+                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-red-500" />
+            </td>
+            <td class="py-2.5 px-4">
+              <div class="flex items-center">
+                <input type="text" value="${l.name || ''}" placeholder="輸入選手姓名"
+                  onchange="adminApp.updateLaneField(${idx}, 'name', this.value)"
+                  class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-red-500" />
+                ${prelimHint}
+              </div>
+            </td>
+            <td class="py-2.5 px-4">
+              <input type="text" value="${l.bib || LANE_COLOR_NAMES[idx]}" placeholder="號碼衣 (例:紅)"
+                onchange="adminApp.updateLaneField(${idx}, 'bib', this.value)"
+                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono text-amber-300 focus:outline-none focus:border-red-500" />
+            </td>
+            <td class="py-2.5 px-4">
+              <select onchange="adminApp.updateLaneField(${idx}, 'status', this.value)"
+                class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none">
+                <option value="OK" ${(!l.status || l.status === 'OK') ? 'selected' : ''}>🟢 正常出賽</option>
+                <option value="DNS" ${l.status === 'DNS' ? 'selected' : ''}>⚪ DNS 棄權未到</option>
+                <option value="DNF" ${l.status === 'DNF' ? 'selected' : ''}>🟡 DNF 未完賽</option>
+                <option value="DQ" ${l.status === 'DQ' ? 'selected' : ''}>🔴 DQ 犯規失格</option>
+              </select>
+            </td>
+            <td class="py-2.5 px-4 text-center">
+              <div class="inline-flex items-center gap-1">
+                <button onclick="adminApp.swapLanes(${idx}, ${idx - 1})" ${idx === 0 ? 'disabled' : ''}
+                  class="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs">⬆️</button>
+                <button onclick="adminApp.swapLanes(${idx}, ${idx + 1})" ${idx === 5 ? 'disabled' : ''}
+                  class="p-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 text-xs">⬇️</button>
+              </div>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      updateCurrentHeatMeta() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        heat.eventTitle = document.getElementById('inputEventTitle').value.trim();
+        heat.roundName = document.getElementById('inputRoundName').value.trim();
+        heat.raceDate = document.getElementById('inputRaceDate').value || '';
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      applyDateToSameEventStage() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        const dateVal = document.getElementById('inputRaceDate').value || '';
+        const targetIsFinal = this.isFinalsHeat(heat);
+        let count = 0;
+
+        this.meetData.heats.forEach(h => {
+          if (h.eventTitle === heat.eventTitle && this.isFinalsHeat(h) === targetIsFinal) {
+            h.raceDate = dateVal;
+            count++;
+          }
+        });
+
+        this.saveMeetToServer();
+        this.renderAll();
+        alert(`📅 已將日期「${dateVal || '未排定'}」同步套用至「${heat.eventTitle} (${targetIsFinal ? '決賽' : '預賽'})」共 ${count} 個組別！`);
+      }
+
+      setHeatDistance(dist) {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        heat.distance = dist;
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      updateLaneField(idx, field, val) {
+        const heat = this.getSelectedHeat();
+        if (!heat || !heat.lanes[idx]) return;
+        heat.lanes[idx][field] = val.trim();
+        if (field === 'status' && val !== 'OK') {
+          heat.lanes[idx].officialTime = null;
+          heat.lanes[idx].rawTime = null;
+          heat.lanes[idx].rank = val;
+          this.recalcHeatRanks(heat);
+        }
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      swapLanes(idxA, idxB) {
+        const heat = this.getSelectedHeat();
+        if (!heat || idxB < 0 || idxB >= 6) return;
+        const a = heat.lanes[idxA];
+        const b = heat.lanes[idxB];
+        // Swap runner info while keeping lane numbers 1..6 and lane vest color bound to lane
+        ['grade', 'name', 'seat', 'refTime', 'prelimTime', 'qualifyType', 'status', 'rawTime', 'officialTime', 'rank'].forEach(k => {
+          const tmp = a[k];
+          a[k] = b[k];
+          b[k] = tmp;
+        });
+        a.bib = LANE_COLOR_NAMES[idxA];
+        b.bib = LANE_COLOR_NAMES[idxB];
+        this.recalcHeatRanks(heat);
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      randomizeLanes() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        const runners = heat.lanes.map(l => ({
+          grade: l.grade, name: l.name, seat: l.seat, refTime: l.refTime, status: l.status || 'OK'
+        }));
+        for (let i = runners.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [runners[i], runners[j]] = [runners[j], runners[i]];
+        }
+        heat.lanes.forEach((l, idx) => {
+          l.grade = runners[idx].grade;
+          l.name = runners[idx].name;
+          l.seat = runners[idx].seat;
+          l.refTime = runners[idx].refTime;
+          l.bib = LANE_COLOR_NAMES[idx];
+          l.status = runners[idx].status;
+        });
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      addNewHeat() {
+        const maxId = this.meetData.heats.reduce((m, h) => Math.max(m, h.id), 0);
+        const current = this.getSelectedHeat();
+        const newId = maxId + 1;
+        const newHeat = {
+          id: newId,
+          eventTitle: current ? current.eventTitle : '六年級男生組 100 公尺',
+          roundName: `預賽 第 ${newId} 組`,
+          raceDate: current ? (current.raceDate || '') : '',
+          distance: current ? current.distance : 100,
+          status: 'ready',
+          proofImage: null,
+          lanes: [1, 2, 3, 4, 5, 6].map(lane => ({
+            lane,
+            grade: '',
+            name: '',
+            bib: LANE_COLOR_NAMES[lane - 1],
+            rawTime: null,
+            officialTime: null,
+            rank: '-',
+            status: 'OK'
+          }))
+        };
+        this.meetData.heats.push(newHeat);
+        this.selectedHeatId = newId;
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      deleteCurrentHeat() {
+        if (this.meetData.heats.length <= 1) {
+          alert('至少需保留一組賽事！');
+          return;
+        }
+        const heat = this.getSelectedHeat();
+        if (!confirm(`確定要刪除「第 ${heat.id} 組 (${heat.eventTitle} · ${heat.roundName})」嗎？`)) return;
+        this.meetData.heats = this.meetData.heats.filter(h => (heat.uid ? h.uid !== heat.uid : h.id !== heat.id));
+        this.selectedHeatId = this.meetData.heats[0].id;
+        this.selectedHeatUid = this.meetData.heats[0].uid;
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      async dispatchSelectedHeatToMobile() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        await this.saveMeetToServer();
+        try {
+          const res = await fetch('/api/active-heat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ heatId: heat.id, uid: heat.uid, raceDate: heat.raceDate })
+          });
+          if (res.ok) {
+            this.meetData.activeHeatId = heat.id;
+            this.meetData.activeHeatUid = heat.uid;
+            this.renderAll();
+            const dTag = heat.raceDate ? ` · 📅${heat.raceDate}` : '';
+            alert(`📡 已成功將「第 ${heat.id} 組 · ${heat.eventTitle} (${heat.roundName || ''}${dTag})」派送至終點手機！\n手機端已自動切換為本組 1～6 道出賽名單。`);
+          }
+        } catch (err) {
+          alert('派送失敗：' + err.message);
+        }
+      }
+
+      /* ===================================================================== */
+      /* SCHEDULE MODAL: PER-EVENT & BATCH RACE DATE ASSIGNMENT                */
+      /* ===================================================================== */
+      openScheduleModal() {
+        this.renderScheduleModalTable();
+        document.getElementById('scheduleModal').classList.remove('hidden');
+      }
+
+      closeScheduleModal() {
+        document.getElementById('scheduleModal').classList.add('hidden');
+        this.sortHeatsBySchedule(false);
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      getDistinctEventsList() {
+        const map = new Map();
+        this.meetData.heats.forEach(h => {
+          const title = h.eventTitle || '未分類項目';
+          if (!map.has(title)) {
+            map.set(title, {
+              eventTitle: title,
+              distance: h.distance || 100,
+              prelimHeats: [],
+              finalHeat: null
+            });
+          }
+          const entry = map.get(title);
+          if (this.isFinalsHeat(h)) {
+            entry.finalHeat = h;
+          } else {
+            entry.prelimHeats.push(h);
+          }
+        });
+        const list = Array.from(map.values());
+        list.sort((a, b) => {
+          const dateA = a.prelimHeats[0]?.raceDate || a.finalHeat?.raceDate || '9999-99-99';
+          const dateB = b.prelimHeats[0]?.raceDate || b.finalHeat?.raceDate || '9999-99-99';
+          if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+          const gradeA = this.getGradeOrder(a.eventTitle);
+          const gradeB = this.getGradeOrder(b.eventTitle);
+          if (gradeA !== gradeB) return gradeA - gradeB;
+
+          const genderA = this.getGenderOrder(a.eventTitle);
+          const genderB = this.getGenderOrder(b.eventTitle);
+          if (genderA !== genderB) return genderA - genderB;
+
+          return (a.distance || 0) - (b.distance || 0);
+        });
+        return list;
+      }
+
+      renderScheduleModalTable() {
+        const tbody = document.getElementById('scheduleTableBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const events = this.getDistinctEventsList();
+        events.forEach((ev, idx) => {
+          const prelimDate = ev.prelimHeats[0]?.raceDate || '';
+          const finalDate = ev.finalHeat?.raceDate || '';
+          const escapedTitle = ev.eventTitle.replace(/'/g, "\\'");
+
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/40 transition';
+          tr.innerHTML = `
+            <td class="py-2.5 px-4 font-bold text-white">
+              <span class="text-slate-500 font-mono mr-1.5">${idx + 1}.</span>${ev.eventTitle}
+            </td>
+            <td class="py-2.5 px-3 text-center font-mono text-amber-400 font-bold">${ev.distance}m</td>
+            <td class="py-2.5 px-4">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]">預賽 ${ev.prelimHeats.length} 組</span>
+                <input type="date" value="${prelimDate}"
+                  onchange="adminApp.setEventStageDate('${escapedTitle}', 'PRELIM', this.value)"
+                  class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-emerald-400 focus:outline-none focus:border-indigo-500" />
+              </div>
+            </td>
+            <td class="py-2.5 px-4">
+              ${
+                ev.finalHeat
+                  ? `<div class="flex items-center gap-2">
+                       <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono text-[11px] font-bold">第 ${ev.finalHeat.id} 組 · 決賽</span>
+                       <input type="date" value="${finalDate}"
+                         onchange="adminApp.setEventStageDate('${escapedTitle}', 'FINAL', this.value)"
+                         class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-amber-300 focus:outline-none focus:border-indigo-500" />
+                     </div>`
+                  : `<button onclick="adminApp.createSingleFinalFramework('${escapedTitle}')"
+                       class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-amber-600 text-slate-300 hover:text-slate-950 font-bold text-[11px] transition">
+                       ＋ 建立本項決賽組並排日期
+                     </button>`
+              }
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      setEventStageDate(eventTitle, stage, dateVal) {
+        this.meetData.heats.forEach(h => {
+          if (h.eventTitle === eventTitle) {
+            const isFinal = this.isFinalsHeat(h);
+            if ((stage === 'PRELIM' && !isFinal) || (stage === 'FINAL' && isFinal)) {
+              h.raceDate = dateVal || '';
+            }
+          }
+        });
+        this.sortHeatsBySchedule(false);
+        this.saveMeetToServer();
+        this.renderScheduleModalTable();
+        this.populateDateFilter();
+        this.renderHeatsList();
+      }
+
+      createSingleFinalFramework(eventTitle) {
+        const sample = this.meetData.heats.find(h => h.eventTitle === eventTitle);
+        const existingFinal = this.meetData.heats.find(h => h.eventTitle === eventTitle && this.isFinalsHeat(h));
+        if (existingFinal) return existingFinal;
+
+        const maxId = this.meetData.heats.reduce((m, h) => Math.max(m, h.id), 0);
+        const newHeat = {
+          id: maxId + 1,
+          eventTitle: eventTitle,
+          roundName: '決賽',
+          raceDate: document.getElementById('batchTargetDate')?.value || '',
+          distance: sample ? sample.distance : 100,
+          status: 'ready',
+          proofImage: null,
+          lanes: [1, 2, 3, 4, 5, 6].map(laneNum => ({
+            lane: laneNum,
+            grade: '',
+            name: '',
+            bib: LANE_COLOR_NAMES[laneNum - 1],
+            rawTime: null,
+            officialTime: null,
+            rank: '-',
+            status: 'OK'
+          }))
+        };
+        this.meetData.heats.push(newHeat);
+        this.saveMeetToServer();
+        this.renderScheduleModalTable();
+        this.renderAll();
+        return newHeat;
+      }
+
+      ensureAllFinalsHeatsCreated(silent = false) {
+        const events = this.getDistinctEventsList();
+        let createdCount = 0;
+        const defaultDate = document.getElementById('batchTargetDate')?.value || '';
+
+        events.forEach(ev => {
+          if (!ev.finalHeat) {
+            const maxId = this.meetData.heats.reduce((m, h) => Math.max(m, h.id), 0);
+            this.meetData.heats.push({
+              id: maxId + 1,
+              eventTitle: ev.eventTitle,
+              roundName: '決賽',
+              raceDate: defaultDate,
+              distance: ev.distance,
+              status: 'ready',
+              proofImage: null,
+              lanes: [1, 2, 3, 4, 5, 6].map(laneNum => ({
+                lane: laneNum,
+                grade: '',
+                name: '',
+                bib: LANE_COLOR_NAMES[laneNum - 1],
+                rawTime: null,
+                officialTime: null,
+                rank: '-',
+                status: 'OK'
+              }))
+            });
+            createdCount++;
+          }
+        });
+
+        this.saveMeetToServer();
+        this.renderScheduleModalTable();
+        this.renderAll();
+        if (!silent) {
+          if (createdCount > 0) {
+            alert(`🏆 已成功為全賽事建立 ${createdCount} 組「決賽組」框架！\n當各項目預賽完賽後，點選「⚡ 依模式B產出本項決賽組」即可自動將晉級選手排入 4、5、6、3、2、1 道！`);
+          } else {
+            alert('✓ 所有 16 個競賽項目皆已具備「決賽組」！');
+          }
+        }
+      }
+
+      applyBatchScheduleDate() {
+        const grade = document.getElementById('batchTargetGrade')?.value || 'ALL';
+        const stage = document.getElementById('batchTargetStage')?.value || 'PRELIM';
+        const dateVal = document.getElementById('batchTargetDate')?.value || '';
+
+        if (stage === 'FINAL' || stage === 'ALL') {
+          this.ensureAllFinalsHeatsCreated(true);
+        }
+
+        let updated = 0;
+        this.meetData.heats.forEach(h => {
+          if (grade !== 'ALL' && !(h.eventTitle || '').includes(grade)) return;
+          const isFinal = this.isFinalsHeat(h);
+          if (stage === 'PRELIM' && isFinal) return;
+          if (stage === 'FINAL' && !isFinal) return;
+          h.raceDate = dateVal;
+          updated++;
+        });
+
+        this.sortHeatsBySchedule(false);
+        this.saveMeetToServer();
+        this.renderScheduleModalTable();
+        this.renderAll();
+        alert(`📅 已成功將日期「${dateVal || '未排定'}」批次套用至 ${updated} 個組別，賽事列表已自動依賽程重排！`);
+      }
+
+      /* ===================================================================== */
+      /* TAB 2: POST-RACE RESULTS & PROOF IMAGE                                */
+      /* ===================================================================== */
+      renderResultsEditor() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+
+        document.getElementById('resultsHeatTitle').textContent =
+          `第 ${heat.id} 組 · ${heat.eventTitle || ''} (${heat.roundName || ''}) - ${heat.distance}m`;
+
+        const badge = document.getElementById('resultsStatusBadge');
+        if (heat.status === 'official') {
+          badge.textContent = '✅ 已審核正式公告';
+          badge.className = 'text-xs px-2.5 py-0.5 rounded font-bold bg-emerald-950 text-emerald-400 border border-emerald-700';
+        } else if (heat.lanes.some(l => l.officialTime)) {
+          badge.textContent = '⏱️ 已完賽 (待確認)';
+          badge.className = 'text-xs px-2.5 py-0.5 rounded font-bold bg-sky-950 text-sky-400 border border-sky-700';
+        } else {
+          badge.textContent = '⏳ 尚未完賽';
+          badge.className = 'text-xs px-2.5 py-0.5 rounded font-bold bg-slate-800 text-slate-400';
+        }
+
+        const tbody = document.getElementById('resultsTableBody');
+        tbody.innerHTML = '';
+
+        heat.lanes.forEach((l, idx) => {
+          const rawDisplay = l.rawTime ? `${Number(l.rawTime).toFixed(3)}s` : '-';
+          const rankColor = l.rank === '1'
+            ? 'bg-amber-400 text-slate-950 font-black'
+            : l.rank === '2'
+              ? 'bg-slate-300 text-slate-950 font-bold'
+              : l.rank === '3'
+                ? 'bg-amber-700 text-white font-bold'
+                : 'bg-slate-800 text-slate-300';
+
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/40 transition';
+          tr.innerHTML = `
+            <td class="py-2.5 px-3">
+              <span class="px-2 py-0.5 rounded font-mono font-bold text-xs ${LANE_COLORS[idx]}">${l.lane}道 (${LANE_COLOR_NAMES[idx]})</span>
+            </td>
+            <td class="py-2.5 px-3">
+              <div class="font-bold text-white text-xs">${l.name || `(第${l.lane}道選手)`}</div>
+              <div class="text-[11px] text-slate-400">${l.grade || ''} ${l.bib ? `(${l.bib}衣)` : ''}</div>
+            </td>
+            <td class="py-2.5 px-3 font-mono text-xs text-slate-400">
+              ${rawDisplay}
+            </td>
+            <td class="py-2.5 px-3">
+              <div class="flex items-center gap-1">
+                <input type="text" value="${l.officialTime || ''}" placeholder="例: 13.45"
+                  onchange="adminApp.manualEditOfficialTime(${idx}, this.value)"
+                  class="w-24 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 font-mono font-bold text-sm text-amber-300 focus:outline-none focus:border-amber-400" />
+                <span class="text-xs text-slate-500 font-mono">s</span>
+              </div>
+            </td>
+            <td class="py-2.5 px-3 text-center">
+              <span class="inline-flex items-center justify-center w-7 h-7 rounded-full font-mono text-xs ${rankColor}">
+                ${l.rank || '-'}
+              </span>
+            </td>
+            <td class="py-2.5 px-3">
+              <select onchange="adminApp.updateLaneField(${idx}, 'status', this.value)"
+                class="bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-300">
+                <option value="OK" ${(!l.status || l.status === 'OK') ? 'selected' : ''}>正常完賽</option>
+                <option value="NR" ${l.status === 'NR' ? 'selected' : ''}>🔥 破大會紀錄</option>
+                <option value="DNS" ${l.status === 'DNS' ? 'selected' : ''}>DNS 棄權</option>
+                <option value="DNF" ${l.status === 'DNF' ? 'selected' : ''}>DNF 未完賽</option>
+                <option value="DQ" ${l.status === 'DQ' ? 'selected' : ''}>DQ 犯規</option>
+              </select>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        const img = document.getElementById('proofImagePreview');
+        const empty = document.getElementById('proofEmptyState');
+        const dlBtn = document.getElementById('btnDownloadProof');
+        if (heat.proofImage) {
+          img.src = heat.proofImage;
+          img.classList.remove('hidden');
+          empty.classList.add('hidden');
+          dlBtn.classList.remove('hidden');
+        } else {
+          img.classList.add('hidden');
+          empty.classList.remove('hidden');
+          dlBtn.classList.add('hidden');
+        }
+      }
+
+      manualEditOfficialTime(idx, valStr) {
+        const heat = this.getSelectedHeat();
+        if (!heat || !heat.lanes[idx]) return;
+        const clean = valStr.replace(/[^0-9.]/g, '');
+        if (!clean) {
+          heat.lanes[idx].officialTime = null;
+          heat.lanes[idx].rawTime = null;
+          heat.lanes[idx].rank = '-';
+        } else {
+          const num = parseFloat(clean);
+          if (!isNaN(num)) {
+            const rounded = Math.ceil(num * 100) / 100;
+            heat.lanes[idx].rawTime = num;
+            heat.lanes[idx].officialTime = rounded.toFixed(2);
+            heat.lanes[idx].status = 'OK';
+          }
+        }
+        this.recalcHeatRanks(heat);
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      recalcHeatRanks(heat) {
+        heat.lanes.forEach(l => {
+          if (!l.officialTime) l.rank = (l.status && l.status !== 'OK' && l.status !== 'NR') ? l.status : '-';
+        });
+        const valid = heat.lanes.filter(l => l.officialTime !== null && l.officialTime !== '');
+        valid.sort((a, b) => {
+          const diff = parseFloat(a.officialTime) - parseFloat(b.officialTime);
+          if (diff !== 0) return diff;
+          return (a.rawTime || 999) - (b.rawTime || 999);
+        });
+        valid.forEach((l, i) => {
+          l.rank = String(i + 1);
+        });
+      }
+
+      markHeatOfficial() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        heat.status = 'official';
+        this.saveMeetToServer();
+        this.renderAll();
+        alert(`✅ 第 ${heat.id} 組 (${heat.eventTitle} · ${heat.roundName}) 已簽認發布為正式成績！`);
+      }
+
+      clearHeatTimes() {
+        const heat = this.getSelectedHeat();
+        if (!heat || !confirm('確定要清除本組所有已判讀秒數嗎？')) return;
+        heat.lanes.forEach(l => {
+          l.rawTime = null;
+          l.officialTime = null;
+          l.rank = '-';
+        });
+        heat.status = 'ready';
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      downloadProofImage() {
+        const heat = this.getSelectedHeat();
+        if (!heat || !heat.proofImage) return;
+        const a = document.createElement('a');
+        a.href = heat.proofImage;
+        a.download = `ProFinish_第${heat.id}組_${heat.eventTitle}_壓線證明圖.png`;
+        a.click();
+      }
+
+      /* ===================================================================== */
+      /* TAB 3: MODE B QUALIFICATION (Q + q = 6) & 4-5-6-3-2-1 FINALS SEEDING  */
+      /* ===================================================================== */
+      setStandingsView(viewMode) {
+        this.standingsView = viewMode;
+        const btnP = document.getElementById('btnStandingsPrelim');
+        const btnF = document.getElementById('btnStandingsFinal');
+        if (btnP && btnF) {
+          if (viewMode === 'PRELIM') {
+            btnP.className = 'px-3 py-1 rounded-lg font-bold transition bg-red-600 text-white';
+            btnF.className = 'px-3 py-1 rounded-lg font-bold transition text-slate-400 hover:text-white';
+          } else {
+            btnF.className = 'px-3 py-1 rounded-lg font-bold transition bg-amber-500 text-slate-950';
+            btnP.className = 'px-3 py-1 rounded-lg font-bold transition text-slate-400 hover:text-white';
+          }
+        }
+        this.renderEventStandings();
+      }
+
+      populateEventSelector() {
+        const sel = document.getElementById('selectEventGroup');
+        if (!sel) return;
+        const prev = sel.value;
+        const titles = [...new Set(this.meetData.heats.map(h => h.eventTitle || '未分類項目'))];
+        sel.innerHTML = '';
+        titles.forEach(t => {
+          const opt = document.createElement('option');
+          opt.value = t;
+          opt.textContent = t;
+          sel.appendChild(opt);
+        });
+        const currentHeat = this.getSelectedHeat();
+        if (prev && titles.includes(prev)) {
+          sel.value = prev;
+        } else if (currentHeat && currentHeat.eventTitle) {
+          sel.value = currentHeat.eventTitle;
+        }
+      }
+
+      // 模式 B：各預賽分組第 1 名保送 (Q) ＋ 其餘擇優 3 名 (q) ＝ 共 6 名，並按預賽成績排入 4、5、6、3、2、1 道
+      getCombinedStandings(eventTitle, viewMode = this.standingsView) {
+        const matchingHeats = this.meetData.heats.filter(h => {
+          if ((h.eventTitle || '未分類項目') !== eventTitle) return false;
+          return viewMode === 'FINAL' ? this.isFinalsHeat(h) : !this.isFinalsHeat(h);
+        });
+
+        const allRunners = [];
+
+        matchingHeats.forEach(h => {
+          // Calculate within-heat rank for valid finished runners
+          const validInHeat = h.lanes
+            .filter(l => l.officialTime !== null && l.officialTime !== '' && (!l.status || l.status === 'OK' || l.status === 'NR'))
+            .slice()
+            .sort((a, b) => {
+              const diff = parseFloat(a.officialTime) - parseFloat(b.officialTime);
+              if (diff !== 0) return diff;
+              return (a.rawTime || 999) - (b.rawTime || 999);
+            });
+
+          const heatRankMap = new Map();
+          validInHeat.forEach((l, idx) => {
+            heatRankMap.set(l.lane, idx + 1);
+          });
+
+          h.lanes.forEach(l => {
+            if (l.name || l.officialTime) {
+              const heatRank = heatRankMap.get(l.lane) || null;
+              allRunners.push({
+                heatId: h.id,
+                roundName: h.roundName,
+                distance: h.distance,
+                lane: l.lane,
+                grade: l.grade,
+                name: l.name || `第${l.lane}道選手`,
+                seat: l.seat,
+                refTime: l.refTime,
+                bib: l.bib || LANE_COLOR_NAMES[l.lane - 1],
+                rawTime: l.rawTime,
+                officialTime: l.officialTime,
+                status: l.status || 'OK',
+                heatRank: heatRank,
+                qualifyType: (viewMode === 'PRELIM' && heatRank === 1) ? 'Q' : null,
+                finalsLane: null,
+                finalsVest: null,
+                seedOrder: null
+              });
+            }
+          });
+        });
+
+        const withTime = allRunners.filter(r => r.officialTime !== null && r.officialTime !== '');
+        const withoutTime = allRunners.filter(r => r.officialTime === null || r.officialTime === '');
+
+        withTime.sort((a, b) => {
+          const diff = parseFloat(a.officialTime) - parseFloat(b.officialTime);
+          if (diff !== 0) return diff;
+          const rawDiff = (a.rawTime || 999) - (b.rawTime || 999);
+          if (rawDiff !== 0) return rawDiff;
+          return (a.heatRank || 99) - (b.heatRank || 99);
+        });
+
+        withTime.forEach((r, idx) => {
+          r.overallRank = idx + 1;
+        });
+        withoutTime.forEach(r => {
+          r.overallRank = '-';
+        });
+
+        if (viewMode === 'PRELIM') {
+          // 1. 先取出所有分組第 1 名保送者 (Q)
+          const qAuto = withTime.filter(r => r.qualifyType === 'Q');
+          // 2. 剩餘名額 (共取 6 名，通常 6 - 3 = 3 名) 由其餘選手依時間擇優錄取 (q)
+          const remainingSpots = Math.max(0, 6 - qAuto.length);
+          const nonAuto = withTime.filter(r => r.qualifyType !== 'Q');
+          nonAuto.slice(0, remainingSpots).forEach(r => {
+            r.qualifyType = 'q';
+          });
+
+          // 3. 將 6 名晉級選手 (Q + q) 依預賽成績由快到慢排序，分配至「4、5、6、3、2、1 道」
+          const qualifiers = withTime
+            .filter(r => r.qualifyType === 'Q' || r.qualifyType === 'q')
+            .slice(0, 6)
+            .sort((a, b) => {
+              const diff = parseFloat(a.officialTime) - parseFloat(b.officialTime);
+              if (diff !== 0) return diff;
+              const rawDiff = (a.rawTime || 999) - (b.rawTime || 999);
+              if (rawDiff !== 0) return rawDiff;
+              return (a.qualifyType === 'Q' ? 0 : 1) - (b.qualifyType === 'Q' ? 0 : 1);
+            });
+
+          qualifiers.forEach((qRunner, seedIdx) => {
+            const assignedLane = FINALS_LANE_ORDER[seedIdx];
+            qRunner.seedOrder = seedIdx + 1;
+            qRunner.finalsLane = assignedLane;
+            qRunner.finalsVest = LANE_COLOR_NAMES[assignedLane - 1];
+          });
+        }
+
+        return [...withTime, ...withoutTime];
+      }
+
+      renderEventStandings() {
+        const eventTitle = document.getElementById('selectEventGroup')?.value;
+        const tbody = document.getElementById('standingsTableBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const list = this.getCombinedStandings(eventTitle, this.standingsView);
+        if (list.length === 0) {
+          const msg = this.standingsView === 'FINAL'
+            ? '此項目尚無「決賽組」資料，請先在預賽總榜點擊「⚡ 依模式B產出本項決賽組」'
+            : '尚無此項目的預賽選手或成績資料';
+          tbody.innerHTML = `<tr><td colspan="8" class="py-8 text-center text-slate-500">${msg}</td></tr>`;
+          return;
+        }
+
+        list.forEach(r => {
+          const isQualified = Boolean(r.qualifyType);
+          const isTop3 = typeof r.overallRank === 'number' && r.overallRank <= 3;
+          const medal = r.overallRank === 1 ? '🥇 1' : r.overallRank === 2 ? '🥈 2' : r.overallRank === 3 ? '🥉 3' : r.overallRank;
+          const heatRankBadge = r.heatRank
+            ? `<span class="ml-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${r.heatRank === 1 ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/50' : 'bg-slate-800 text-slate-400'}">組第${r.heatRank}</span>`
+            : '';
+
+          let statusCellHtml = `<span class="text-slate-500">${r.status === 'OK' ? '-' : r.status}</span>`;
+          if (this.standingsView === 'PRELIM') {
+            if (r.qualifyType === 'Q') {
+              const fIdx = (r.finalsLane || 1) - 1;
+              statusCellHtml = `
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold text-xs">🟢 Q 分組第1保送</span>
+                  <span class="text-slate-400">➜</span>
+                  <span class="px-2 py-0.5 rounded font-mono font-bold text-xs ${LANE_COLORS[fIdx]}">決賽 ${r.finalsLane}道 (${r.finalsVest})</span>
+                </div>`;
+            } else if (r.qualifyType === 'q') {
+              const fIdx = (r.finalsLane || 1) - 1;
+              statusCellHtml = `
+                <div class="flex items-center gap-1.5 flex-wrap">
+                  <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold text-xs">🟡 q 擇優晉級</span>
+                  <span class="text-slate-400">➜</span>
+                  <span class="px-2 py-0.5 rounded font-mono font-bold text-xs ${LANE_COLORS[fIdx]}">決賽 ${r.finalsLane}道 (${r.finalsVest})</span>
+                </div>`;
+            }
+          } else {
+            if (typeof r.overallRank === 'number' && r.overallRank <= 6) {
+              statusCellHtml = `<span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold text-xs">🏆 決賽第 ${r.overallRank} 名</span>`;
+            }
+          }
+
+          const tr = document.createElement('tr');
+          tr.className = (isQualified || (this.standingsView === 'FINAL' && isTop3))
+            ? 'bg-amber-500/5 hover:bg-slate-800/50 transition'
+            : 'hover:bg-slate-800/40 transition';
+
+          tr.innerHTML = `
+            <td class="py-3 px-4 text-center font-mono font-black text-sm ${(isQualified || isTop3) ? 'text-amber-300' : 'text-slate-400'}">
+              ${medal}
+            </td>
+            <td class="py-3 px-4 text-xs text-slate-300">
+              第 ${r.heatId} 組 (${r.roundName || ''}) · <b>第 ${r.lane} 道</b> ${heatRankBadge}
+            </td>
+            <td class="py-3 px-4 text-xs text-slate-300">${r.grade || '-'}</td>
+            <td class="py-3 px-4 font-bold text-white">${r.name}</td>
+            <td class="py-3 px-4">
+              <span class="px-2 py-0.5 rounded font-mono font-bold text-xs ${LANE_COLORS[(r.lane || 1) - 1]}">${r.bib || LANE_COLOR_NAMES[(r.lane || 1) - 1]}</span>
+            </td>
+            <td class="py-3 px-4 font-mono font-black text-base text-emerald-400">
+              ${r.officialTime ? `${r.officialTime}s` : '-'}
+            </td>
+            <td class="py-3 px-4 font-mono text-xs text-slate-400">
+              ${r.rawTime ? `${Number(r.rawTime).toFixed(3)}s` : '-'}
+            </td>
+            <td class="py-3 px-4 text-xs">
+              ${statusCellHtml}
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+
+      generateFinalsHeatFromTop6() {
+        const eventTitle = document.getElementById('selectEventGroup')?.value;
+        const prelimList = this.getCombinedStandings(eventTitle, 'PRELIM');
+        const qualifiers = prelimList.filter(r => r.qualifyType === 'Q' || r.qualifyType === 'q');
+
+        if (qualifiers.length === 0) {
+          alert(`「${eventTitle}」目前尚無預賽完賽成績！\n請先完成預賽計時判讀（或手動輸入測試秒數）後，再提取晉級決賽名單。`);
+          return;
+        }
+
+        // 建立 1~6 道決賽道次，號碼衣強制綁定決賽新道次顏色 (1紅、2藍、3黃、4紫、5橘、6綠)
+        const newLanes = [1, 2, 3, 4, 5, 6].map(laneNum => ({
+          lane: laneNum,
+          grade: '',
+          name: '',
+          bib: LANE_COLOR_NAMES[laneNum - 1],
+          rawTime: null,
+          officialTime: null,
+          rank: '-',
+          status: 'OK'
+        }));
+
+        qualifiers.forEach(qRunner => {
+          const targetObj = newLanes.find(l => l.lane === qRunner.finalsLane);
+          if (targetObj) {
+            targetObj.grade = qRunner.grade;
+            targetObj.name = qRunner.name;
+            targetObj.seat = qRunner.seat;
+            targetObj.bib = LANE_COLOR_NAMES[qRunner.finalsLane - 1];
+            targetObj.prelimTime = qRunner.officialTime;
+            targetObj.qualifyType = qRunner.qualifyType;
+          }
+        });
+
+        // 檢查是否已有此項目的決賽組，若有則直接更新該組，避免重複建立
+        let finalsHeat = this.meetData.heats.find(h => h.eventTitle === eventTitle && this.isFinalsHeat(h));
+        if (finalsHeat) {
+          finalsHeat.lanes = newLanes;
+          finalsHeat.status = 'ready';
+        } else {
+          const maxId = this.meetData.heats.reduce((m, h) => Math.max(m, h.id), 0);
+          const newId = maxId + 1;
+          finalsHeat = {
+            id: newId,
+            eventTitle: eventTitle,
+            roundName: '決賽 (各組第1+擇優3)',
+            raceDate: '',
+            distance: qualifiers[0].distance || 100,
+            status: 'ready',
+            proofImage: null,
+            lanes: newLanes
+          };
+          this.meetData.heats.push(finalsHeat);
+        }
+
+        this.selectedHeatId = finalsHeat.id;
+        this.saveMeetToServer();
+        this.switchTab('roster');
+
+        const summaryLines = newLanes
+          .filter(l => l.name)
+          .map(l => `第 ${l.lane} 道 (${l.bib}衣)：${l.grade} ${l.name} [${l.qualifyType} · 預賽 ${l.prelimTime}s]`)
+          .join('\n');
+
+        alert(
+          `🎉 已依【模式 B（分組第1保送 Q ＋ 擇優 3 名 q）】完成「${eventTitle}」決賽編道！\n` +
+          `決賽組別：第 ${finalsHeat.id} 組（道次順序：4、5、6、3、2、1 道）\n\n` +
+          `${summaryLines}`
+        );
+      }
+
+      /* ===================================================================== */
+      /* QUICK PASTE, CSV IMPORT / EXPORT & A4 OFFICIAL PRINTING               */
+      /* ===================================================================== */
+      openQuickPasteModal() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        const lines = heat.lanes.map(l => `${l.grade || ''}, ${l.name || ''}, ${l.bib || ''}`);
+        document.getElementById('quickPasteTextarea').value = lines.join('\n');
+        document.getElementById('quickPasteModal').classList.remove('hidden');
+      }
+
+      closeQuickPasteModal() {
+        document.getElementById('quickPasteModal').classList.add('hidden');
+      }
+
+      applyQuickPaste() {
+        const heat = this.getSelectedHeat();
+        if (!heat) return;
+        const raw = document.getElementById('quickPasteTextarea').value;
+        const lines = raw.split(/\r?\n/).slice(0, 6);
+
+        lines.forEach((line, idx) => {
+          if (!line.trim()) return;
+          const parts = line.split(/[,，\t]+/).map(s => s.trim());
+          if (parts.length >= 2) {
+            heat.lanes[idx].grade = parts[0] || '';
+            heat.lanes[idx].name = parts[1] || '';
+            heat.lanes[idx].bib = parts[2] || LANE_COLOR_NAMES[idx];
+          } else {
+            heat.lanes[idx].name = parts[0] || '';
+            heat.lanes[idx].bib = LANE_COLOR_NAMES[idx];
+          }
+        });
+
+        this.closeQuickPasteModal();
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      openBatchCsvModal() {
+        document.getElementById('batchCsvModal').classList.remove('hidden');
+      }
+
+      closeBatchCsvModal() {
+        document.getElementById('batchCsvModal').classList.add('hidden');
+      }
+
+      downloadTemplateCsv() {
+        const csv = "\uFEFF組別,項目名稱,賽別,距離,道次,班級,姓名,號碼衣\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,1,六年一班,陳小明,紅\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,2,六年二班,林阿豪,藍\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,3,六年三班,張志偉,黃\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,4,六年四班,黃冠宇,紫\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,5,六年五班,李宗翰,橘\n" +
+          "1,六年級男生組 100公尺,預賽第1組,100,6,六年六班,王俊傑,綠\n";
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "ProFinish_6道賽事出賽名單範本.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      handleBatchCsvFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const lines = ev.target.result.split(/\r?\n/).filter(l => l.trim());
+          const heatMap = new Map();
+
+          for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(',').map(s => s.trim());
+            if (cols.length < 6) continue;
+
+            let heatId, eventTitle, roundName, dist, lane, grade, name, bib;
+            if (cols.length >= 8) {
+              heatId = parseInt(cols[0], 10) || 1;
+              eventTitle = cols[1] || '100公尺競賽';
+              roundName = cols[2] || `第 ${heatId} 組`;
+              dist = parseInt(cols[3], 10) || 100;
+              lane = parseInt(cols[4], 10) || 1;
+              grade = cols[5] || '';
+              name = cols[6] || '';
+              bib = cols[7] || LANE_COLOR_NAMES[lane - 1] || '';
+            } else {
+              heatId = parseInt(cols[0], 10) || 1;
+              dist = parseInt(cols[1], 10) || 100;
+              eventTitle = `${dist}公尺競賽`;
+              roundName = `第 ${heatId} 組`;
+              lane = parseInt(cols[2], 10) || 1;
+              grade = cols[3] || '';
+              name = cols[4] || '';
+              bib = cols[5] || LANE_COLOR_NAMES[lane - 1] || '';
+            }
+
+            if (lane < 1 || lane > 6) continue;
+
+            if (!heatMap.has(heatId)) {
+              heatMap.set(heatId, {
+                id: heatId,
+                eventTitle,
+                roundName,
+                raceDate: '',
+                distance: dist,
+                status: 'ready',
+                proofImage: null,
+                lanes: [1, 2, 3, 4, 5, 6].map(n => ({
+                  lane: n, grade: '', name: '', bib: LANE_COLOR_NAMES[n - 1], rawTime: null, officialTime: null, rank: '-', status: 'OK'
+                }))
+              });
+            }
+            const h = heatMap.get(heatId);
+            h.lanes[lane - 1] = { lane, grade, name, bib: bib || LANE_COLOR_NAMES[lane - 1], rawTime: null, officialTime: null, rank: '-', status: 'OK' };
+          }
+
+          if (heatMap.size > 0) {
+            this.meetData.heats = Array.from(heatMap.values());
+            this.selectedHeatId = this.meetData.heats[0].id;
+            this.saveMeetToServer();
+            this.renderAll();
+            this.closeBatchCsvModal();
+            alert(`✅ 成功匯入 ${heatMap.size} 組賽事名單！`);
+          }
+        };
+        reader.readAsText(file, 'UTF-8');
+      }
+
+      exportAllCsv() {
+        let csv = "\uFEFF組別,比賽日期,競賽項目,賽別,距離,道次,班級,姓名,號碼衣,千分秒原始成績,官方百分秒成績,組內名次,狀態\n";
+        this.meetData.heats.forEach(h => {
+          h.lanes.forEach(l => {
+            csv += `${h.id},"${h.raceDate || ''}","${h.eventTitle || ''}","${h.roundName || ''}",${h.distance}m,${l.lane},"${l.grade || ''}","${l.name || ''}","${l.bib || ''}",${l.rawTime ? Number(l.rawTime).toFixed(3) : ''},${l.officialTime || ''},${l.rank || '-'},${l.status || 'OK'}\n`;
+          });
+        });
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${this.meetData.meetTitle}_全賽事總成績表.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      printSheet(type) {
+        const printArea = document.getElementById('printArea');
+        const heat = this.getSelectedHeat();
+        const nowStr = new Date().toLocaleString('zh-TW');
+
+        if (type === 'checkIn' && heat) {
+          printArea.innerHTML = `
+            <div class="max-w-3xl mx-auto">
+              <h1 class="text-2xl font-black text-center mb-1">${this.meetData.meetTitle}</h1>
+              <h2 class="text-lg font-bold text-center mb-4">【檢錄處出賽點名暨道次確認單】</h2>
+              <div class="flex justify-between text-sm font-bold border-b-2 border-black pb-2 mb-4">
+                <span>組別：第 ${heat.id} 組 (${heat.roundName || ''})</span>
+                <span>競賽項目：${heat.eventTitle || ''} (${heat.distance}公尺)</span>
+                <span>比賽日期：${heat.raceDate || '________'}</span>
+              </div>
+              <table class="w-full border-collapse border border-black text-sm">
+                <thead>
+                  <tr class="bg-gray-100">
+                    <th class="border border-black py-2 px-3 w-16 text-center">道次</th>
+                    <th class="border border-black py-2 px-3">班級 / 單位</th>
+                    <th class="border border-black py-2 px-3">選手姓名</th>
+                    <th class="border border-black py-2 px-3 w-24 text-center">號碼衣</th>
+                    <th class="border border-black py-2 px-3 w-28 text-center">檢錄點名</th>
+                    <th class="border border-black py-2 px-3 w-32">備註</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${heat.lanes.map(l => `
+                    <tr>
+                      <td class="border border-black py-3 px-3 text-center font-bold">第 ${l.lane} 道</td>
+                      <td class="border border-black py-3 px-3">${l.grade || ''}</td>
+                      <td class="border border-black py-3 px-3 font-bold">${l.name || ''}</td>
+                      <td class="border border-black py-3 px-3 text-center font-mono font-bold">${l.bib || ''}</td>
+                      <td class="border border-black py-3 px-3 text-center">□ 到　□ 棄權</td>
+                      <td class="border border-black py-3 px-3"></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              <div class="mt-8 flex justify-between text-sm">
+                <span>檢錄裁判簽章：__________________</span>
+                <span>起點裁判簽章：__________________</span>
+                <span class="text-xs text-gray-500">列印時間：${nowStr}</span>
+              </div>
+            </div>
+          `;
+        } else if (type === 'heatResult' && heat) {
+          printArea.innerHTML = `
+            <div class="max-w-3xl mx-auto">
+              <h1 class="text-2xl font-black text-center mb-1">${this.meetData.meetTitle}</h1>
+              <h2 class="text-lg font-bold text-center mb-4">【單組電子計時正式成績報告單】</h2>
+              <div class="flex justify-between text-sm font-bold border-b-2 border-black pb-2 mb-4">
+                <span>組別：第 ${heat.id} 組 (${heat.roundName || ''})</span>
+                <span>競賽項目：${heat.eventTitle || ''} (${heat.distance}公尺)</span>
+                <span>比賽日期：${heat.raceDate || '________'}</span>
+              </div>
+              <table class="w-full border-collapse border border-black text-sm">
+                <thead>
+                  <tr class="bg-gray-100">
+                    <th class="border border-black py-2 px-3 w-16 text-center">名次</th>
+                    <th class="border border-black py-2 px-3 w-16 text-center">道次</th>
+                    <th class="border border-black py-2 px-3">班級 / 單位</th>
+                    <th class="border border-black py-2 px-3">選手姓名</th>
+                    <th class="border border-black py-2 px-3 w-24 text-center">號碼衣</th>
+                    <th class="border border-black py-2 px-3 w-28 text-center">官方成績</th>
+                    <th class="border border-black py-2 px-3 w-24 text-center">備註</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${heat.lanes.map(l => `
+                    <tr>
+                      <td class="border border-black py-2.5 px-3 text-center font-black">${l.rank || '-'}</td>
+                      <td class="border border-black py-2.5 px-3 text-center">第 ${l.lane} 道</td>
+                      <td class="border border-black py-2.5 px-3">${l.grade || ''}</td>
+                      <td class="border border-black py-2.5 px-3 font-bold">${l.name || ''}</td>
+                      <td class="border border-black py-2.5 px-3 text-center font-mono">${l.bib || ''}</td>
+                      <td class="border border-black py-2.5 px-3 text-center font-mono font-bold">${l.officialTime ? `${l.officialTime}s` : '-'}</td>
+                      <td class="border border-black py-2.5 px-3 text-center">${l.status === 'OK' ? '' : (l.status || '')}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              ${heat.proofImage ? `<div class="mt-4"><p class="text-xs font-bold mb-1">終點攝影壓線證明圖：</p><img src="${heat.proofImage}" class="w-full max-h-64 object-contain border border-black" /></div>` : ''}
+              <div class="mt-8 flex justify-between text-sm">
+                <span>終點主任簽章：__________________</span>
+                <span>紀錄組長簽章：__________________</span>
+                <span class="text-xs text-gray-500">列印時間：${nowStr}</span>
+              </div>
+            </div>
+          `;
+        } else if (type === 'eventStandings') {
+          const eventTitle = document.getElementById('selectEventGroup')?.value || '';
+          const list = this.getCombinedStandings(eventTitle, this.standingsView);
+          const subTitle = this.standingsView === 'FINAL'
+            ? `【${eventTitle} · 決賽最終成績公告榜單暨獎狀清冊】`
+            : `【${eventTitle} · 預賽總成績暨晉級決賽編道公告單 (模式B：分組第一保送Q + 擇優q)】`;
+          printArea.innerHTML = `
+            <div class="max-w-3xl mx-auto">
+              <h1 class="text-2xl font-black text-center mb-1">${this.meetData.meetTitle}</h1>
+              <h2 class="text-lg font-bold text-center mb-4">${subTitle}</h2>
+              <table class="w-full border-collapse border border-black text-sm">
+                <thead>
+                  <tr class="bg-gray-100">
+                    <th class="border border-black py-2 px-2 w-16 text-center">名次</th>
+                    <th class="border border-black py-2 px-2">班級</th>
+                    <th class="border border-black py-2 px-2">選手姓名</th>
+                    <th class="border border-black py-2 px-2 w-28 text-center">原組別/道次</th>
+                    <th class="border border-black py-2 px-2 w-24 text-center">正式成績</th>
+                    <th class="border border-black py-2 px-2 text-center">${this.standingsView === 'FINAL' ? '獎項備註' : '晉級資格與決賽道次 (號碼衣)'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${list.map(r => {
+                    let qualText = '-';
+                    if (this.standingsView === 'PRELIM' && r.qualifyType) {
+                      qualText = `${r.qualifyType === 'Q' ? 'Q 分組第一保送' : 'q 擇優晉級'} ➜ 決賽第 ${r.finalsLane} 道 (${r.finalsVest}衣)`;
+                    } else if (this.standingsView === 'FINAL' && typeof r.overallRank === 'number' && r.overallRank <= 6) {
+                      qualText = `決賽第 ${r.overallRank} 名`;
+                    }
+                    return `
+                      <tr>
+                        <td class="border border-black py-2 px-2 text-center font-black">${typeof r.overallRank === 'number' ? `第 ${r.overallRank} 名` : '-'}</td>
+                        <td class="border border-black py-2 px-2">${r.grade || ''}</td>
+                        <td class="border border-black py-2 px-2 font-bold">${r.name || ''}</td>
+                        <td class="border border-black py-2 px-2 text-center text-xs">第${r.heatId}組 / ${r.lane}道(${r.bib})</td>
+                        <td class="border border-black py-2 px-2 text-center font-mono font-bold">${r.officialTime ? `${r.officialTime} 秒` : '-'}</td>
+                        <td class="border border-black py-2 px-2 text-center text-xs font-bold">${qualText}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+              <div class="mt-8 flex justify-between text-sm">
+                <span>裁判長簽章：__________________</span>
+                <span>大會紀錄組簽章：__________________</span>
+                <span class="text-xs text-gray-500">列印時間：${nowStr}</span>
+              </div>
+            </div>
+          `;
+        }
+
+        window.print();
+      }
+    }
+
+    const adminApp = new ProFinishAdmin();
+  </script>
+</body>
+</html>

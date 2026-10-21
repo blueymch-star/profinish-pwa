@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#090d16">
+  <title>ProFinish 手機版操作教學手冊</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            athletic: {
+              red: '#ef4444',
+              gold: '#f59e0b',
+              green: '#10b981',
+              blue: '#0284c7'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    @media print {
+      body { background: white !important; color: black !important; }
+      .no-print { display: none !important; }
+      .print-card { border: 1px solid #ccc !important; box-shadow: none !important; background: white !important; color: black !important; }
+    }
+    .glass-card {
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body class="min-h-full flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
+
+  <!-- Top Sticky Navigation -->
+  <header class="sticky top-0 z-30 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-4 py-3">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-red-500 to-amber-500 flex items-center justify-center font-black text-white text-base shadow-md">
+          ⚡
+        </div>
+        <div>
+          <h1 class="text-sm font-bold text-white flex items-center gap-1.5">
+            ProFinish <span class="text-[10px] uppercase font-mono px-1.5 py-0.2 rounded bg-red-950 text-red-400 border border-red-800/60">操作手冊</span>
+          </h1>
+          <p class="text-[10px] text-slate-400">校園田徑終點攝影電子計時系統 (v2.0 PWA)</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 no-print">
+        <a href="./index.html" class="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow flex items-center gap-1">
+          <span>📱</span>
+          <span>返回計時 App</span>
+        </a>
+        <button onclick="window.print()" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs hidden sm:block">
+          🖨️ 列印手冊
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="flex-1 max-w-4xl mx-auto w-full p-4 sm:p-6 flex flex-col gap-8">
+
+    <!-- Section 0: Quick Overview Banner -->
+    <section class="glass-card rounded-2xl p-4 sm:p-6 shadow-xl border border-slate-800 flex flex-col sm:flex-row gap-4 items-center justify-between">
+      <div class="flex-1">
+        <span class="text-xs font-mono font-bold text-amber-400 uppercase tracking-widest block mb-1">🏃‍♂️ 核心設計理念</span>
+        <h2 class="text-lg font-black text-white mb-1.5">免 Mac、免外接儀器，雙手機無線連線即可開跑！</h2>
+        <p class="text-xs text-slate-300 leading-relaxed">
+          終點機採用「全螢幕相機優先」介面，主裁判可全神貫注對準白線；所有賽務設定與道次判讀皆收納於收縮抽屜中，點開即判，判完秒收！
+        </p>
+      </div>
+      <div class="flex gap-2 flex-wrap sm:flex-col text-xs font-mono">
+        <div class="bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-lg text-emerald-400 flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> PTP 同步誤差 &lt; 2ms
+        </div>
+        <div class="bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-lg text-sky-400 flex items-center gap-1.5">
+          <span>📸</span> IAAF 0.01s 無條件進位
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 1: 主機端全螢幕攝影介面 -->
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span class="text-xl">🏁</span>
+        <h2 class="text-base font-bold text-white">一、【終點主機端】全螢幕攝影畫面按鈕詳解</h2>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs flex flex-col gap-3">
+        <!-- Visual Phone Mockup Box -->
+        <div class="relative w-full rounded-xl overflow-hidden bg-black border-2 border-slate-700 aspect-[16/9] max-h-56 flex items-center justify-center">
+          <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/80 pointer-events-none"></div>
+
+          <!-- Red Slit Line Mockup -->
+          <div class="absolute top-0 bottom-0 w-1 bg-red-500 shadow-[0_0_10px_#ef4444]" style="left: 50%;">
+            <div class="absolute top-2 -translate-x-1/2 bg-red-600 text-[9px] font-bold px-1.5 py-0.2 rounded-full text-white">
+              終點基準線 50%
+            </div>
+          </div>
+
+          <!-- Top HUD Mockup -->
+          <div class="absolute top-2 inset-x-3 flex justify-between items-center text-[10px]">
+            <span class="bg-slate-900/80 px-2 py-0.5 rounded text-white font-bold">100m · 第 1 組 ▼</span>
+            <span class="bg-slate-950 font-mono text-emerald-400 px-2 py-0.5 rounded border border-emerald-500 font-black">00:00.00</span>
+            <div class="flex gap-1">
+              <span class="bg-red-600 text-white px-2 py-0.5 rounded font-bold">🎞️ 判讀</span>
+              <span class="bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">☰</span>
+            </div>
+          </div>
+
+          <!-- Bottom HUD Mockup -->
+          <div class="absolute bottom-2 inset-x-3 flex justify-center gap-1.5 text-[10px]">
+            <span class="bg-emerald-600 text-white px-2.5 py-1 rounded font-bold">🎯 待命中</span>
+            <span class="bg-amber-600 text-white px-2.5 py-1 rounded font-bold">⚡ 手動起跑</span>
+            <span class="bg-slate-800 text-slate-300 px-2 py-1 rounded">重置</span>
+            <span class="bg-red-600 text-white px-2 py-1 rounded font-bold">🎞️ 判讀</span>
+          </div>
+
+          <span class="text-slate-600 text-[11px] font-mono pointer-events-none">[ 全螢幕 1080p 滿版即時相機取景 ]</span>
+        </div>
+
+        <!-- Button Explanation Table -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-2">
+          <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+            <span class="font-bold text-red-400 flex items-center gap-1 mb-1">
+              <span>📍</span> 紅色垂直終點基準線
+            </span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              貫穿全螢幕。請將此紅線精準對齊操場跑道白色終點線的<b>「前緣」</b>。點一下紅線標籤可展開滑桿左右微調（不需移動腳架）。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+            <span class="font-bold text-emerald-400 flex items-center gap-1 mb-1">
+              <span>🎯</span> 待命中 (ARM) 按鈕
+            </span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              <b>綠色</b>代表系統待命中，起跑手機鳴槍時會瞬間自動開始計時；再點一次變<b>灰色</b>（鎖定），換組空檔防止誤觸發。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+            <span class="font-bold text-amber-400 flex items-center gap-1 mb-1">
+              <span>⚡</span> 手動起跑按鈕
+            </span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              單機備援模式或目視發令旗起跑時使用。按下去瞬間開始碼錶計時與狹縫高速寫入。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+            <span class="font-bold text-sky-400 flex items-center gap-1 mb-1">
+              <span>🎞️</span> 判讀按鈕（底部與右上角皆有）
+            </span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              選手壓線跑過終點後點擊，底部全功能「終點畫卷工作台」立即滑出展開！
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: 側邊賽事選單抽屜 (☰) -->
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span class="text-xl">⚙️</span>
+        <h2 class="text-base font-bold text-white">二、【側邊選單抽屜 ☰】賽務、鏡頭與配對設定</h2>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs flex flex-col gap-3">
+        <p class="text-slate-300">
+          點擊畫面右上角的 <b>`☰`</b> 或頂部 <b>`[100m · 第 1 組 ▼]`</b> 標籤，即可自右側滑出選單。各功能說明如下：
+        </p>
+
+        <div class="divide-y divide-slate-800">
+          <div class="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="font-semibold text-white">1. 操作模式切換</span>
+            <span class="text-slate-400 text-[11px]">可切換【🏁 終點攝影主機】或【🔫 起跑發送器】。</span>
+          </div>
+
+          <div class="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="font-semibold text-white">2. 競賽項目距離</span>
+            <span class="text-slate-400 text-[11px]">提供 <b>`60m`</b>、<b>`100m`</b>、<b>`200m`</b> 一鍵切換，成績單與證明圖項目同步連動。</span>
+          </div>
+
+          <div class="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="font-semibold text-white">3. 當前組別與新增</span>
+            <span class="text-slate-400 text-[11px]">切換第 1 組、第 2 組...，或點 <b>`+ 新增組別`</b>，每組照片與名單獨立分頁儲存。</span>
+          </div>
+
+          <div class="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="font-semibold text-white">4. 相機切換與補光燈 💡</span>
+            <span class="text-slate-400 text-[11px]">支援 iPhone 16 Pro 長焦望遠鏡頭（消除第1～6道廣角視差）與後置補光手電筒。</span>
+          </div>
+
+          <div class="py-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="font-semibold text-white">5. 雙手機房間配對碼</span>
+            <span class="text-slate-400 text-[11px]">預設顯示 <b>`2026`</b>，起跑端手機輸入此 4 位數即可秒連。</span>
+          </div>
+        </div>
+
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800 text-[11px] text-amber-300">
+          💡 <b>小訣竅</b>：設定完成後，點擊抽屜最下方的「關閉選單，回到攝影畫面」，畫面立刻恢復滿版乾淨取景。
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: 判讀工作台與一鍵道次綁定 -->
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span class="text-xl">🎞️</span>
+        <h2 class="text-base font-bold text-white">三、【終點畫卷與判讀工作台】操作步驟</h2>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs flex flex-col gap-4">
+        <p class="text-slate-300 leading-relaxed">
+          選手跑過終點後，點擊 <b>`[⏹️ 停止計時]`</b> 或 <b>`[🎞️ 判讀]`</b>，全功能判讀工作台立即自動升起。判讀只需 30 秒：
+        </p>
+
+        <!-- 3-Step Process Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+            <div class="w-6 h-6 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-xs">1</div>
+            <span class="font-bold text-white">滑動對準選手胸部</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              手指左右滑動時間畫卷，將黃色十字圓圈游標對準選手<b>胸部前緣（軀幹）</b>，依田協規定不以頭或手部為準。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+            <div class="w-6 h-6 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-xs">2</div>
+            <span class="font-bold text-white">點擊道次按鈕綁定 (1~6道)</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              對準後直接按下方 <b>`[1道]` ～ `[6道]`</b> 按鈕，游標時間立即寫入該學生名下，並<b>自動計算 1～6 名名次</b>！
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+            <div class="w-6 h-6 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-xs">3</div>
+            <span class="font-bold text-white">一鍵匯出或回到攝影</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              點 <b>`[📸 證明圖]`</b> 存入手機相簿，點 <b>`[📊 成績單]`</b> 匯出 CSV。最後按 <b>`[⬇ 收起回到攝影]`</b> 準備下一組。
+            </p>
+          </div>
+        </div>
+
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1 text-[11px]">
+          <span class="font-bold text-sky-400">⚖️ 官方時間進位規則提醒：</span>
+          <p class="text-slate-400 leading-relaxed">
+            系統嚴格遵守國際田徑總會 (World Athletics) 規則：任何非整百分秒之成績，一律<b>無條件進位至下一百分之一秒</b>。例如感測為 `10.231s`，官方判定成績自動為 `10.24s`。
+          </p>
+        </div>
+
+        <div class="bg-slate-950 p-3 rounded-xl border border-amber-900/40 flex flex-col gap-1 text-[11px]">
+          <span class="font-bold text-amber-400">🏃‍♂️ 為什麼終點畫卷裡的人看起來「扁扁的」？如何身形還原？</span>
+          <p class="text-slate-400 leading-relaxed">
+            終點攝影（Slit-Scan）的水平橫軸是<b>「時間（秒數）」</b>而非傳統空間照片。跑者衝線時速極快，通過終點紅線<b>只需約 0.03 秒</b>，在畫面上只會切出幾條像素，因此初始看起來像細竹籤。<br>
+            👉 <b>一鍵身形比例還原</b>：在工作台頂部點擊 <b>`[8x 🏃]`</b> 或 <b>`[16x]`</b>，時間軸立即強力橫向展開，選手的胸口前緣、手臂與軀幹輪廓立即清晰呈現，即可輕鬆將黃色十字游標對準胸口！
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 4: 起跑發送器介面 -->
+    <section class="flex flex-col gap-3">
+      <div class="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span class="text-xl">🔫</span>
+        <h2 class="text-base font-bold text-white">四、【起跑發送器端】三大起跑模式</h2>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs flex flex-col gap-3">
+        <p class="text-slate-300">
+          第二支手機輸入 <b>`2026`</b> 點擊「連線」後，即可使用以下三種起跑方式：
+        </p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+            <span class="font-bold text-amber-400 block mb-1">👆 手動防呆大按鈕</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              螢幕中央大按鈕，發令裁判扣扳機瞬間按下，手機震動回饋，微秒級同步啟動終點主機。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+            <span class="font-bold text-amber-400 block mb-1">📢 自動發令員模式</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              點擊後手機語音播報「各就位」➜「預備」➜ 隨機 1.5~2.2 秒鳴槍，鳴槍瞬間 0 延遲同步計時。
+            </p>
+          </div>
+
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800">
+            <span class="font-bold text-amber-400 block mb-1">🎙️ 槍聲/哨音瞬態偵測</span>
+            <p class="text-slate-400 text-[11px] leading-relaxed">
+              點開啟麥克風放裁判身旁，偵測到巨大槍聲破音峰值時，自動發送起跑訊號。
+            </p>
+        </div>
+
+        <!-- Zero Control Test Explanation -->
+        <div class="mt-3 pt-3 border-t border-slate-800">
+          <span class="font-bold text-emerald-400 flex items-center gap-1.5 mb-2">
+            <span>⚡</span> 四之一、開賽前「歸零測試」(Zero Control Test · IAAF TR 19.19 標準)
+          </span>
+          <p class="text-slate-400 text-[11px] leading-relaxed mb-2.5">
+            <b>什麼是歸零測試？</b> 國際田徑規則要求大會開賽前，裁判長必須驗證「發令訊號」與「計時器起跑點」完全落在 <b>0.000 秒</b> 且無延遲。
+          </p>
+          <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 space-y-2 text-[11px] text-slate-300">
+            <div class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">步驟 1</span>
+              <span><b>雙機對齊</b>：將終點機架於終點線按「待命中 (ARM)」，將起跑機螢幕面對終點鏡頭（置於終點基準紅線上）。</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">步驟 2</span>
+              <span><b>觸發閃光</b>：在起跑機按下「鳴槍起跑」或「⚡ 歸零閃光測試」，起跑機會瞬間發送起跑訊號並爆發 150ms 全螢幕高亮白光。</span>
+            </div>
+            <div class="flex items-start gap-2">
+              <span class="text-emerald-400 font-bold">步驟 3</span>
+              <span><b>判讀驗證</b>：終點機停止計時並打開「判讀」，將黃色游標移至時間畫卷上白光出現的最左側邊緣，時間讀數必須精準為 <b>00:00.000</b>，即完成歸零驗證！</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Section 5: 現場五步驟 SOP -->
+    <section class="flex flex-col gap-3 mb-6">
+      <div class="flex items-center gap-2 border-b border-slate-800 pb-2">
+        <span class="text-xl">📋</span>
+        <h2 class="text-base font-bold text-white">五、運動會現場五步驟標準作業程序 (SOP)</h2>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs flex flex-col gap-2.5">
+        <div class="flex gap-3 items-start">
+          <span class="w-5 h-5 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-[10px] flex-none mt-0.5">1</span>
+          <div>
+            <b class="text-white">機位架設</b>：終點 iPhone 16 Pro 架於跑道外緣 5～10 公尺高處，將畫面紅線對齊終點白線前緣。
+          </div>
+        </div>
+
+        <div class="flex gap-3 items-start">
+          <span class="w-5 h-5 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-[10px] flex-none mt-0.5">2</span>
+          <div>
+            <b class="text-white">雙機配對</b>：起跑手機輸入「2026」連線，檢查終點機頂部顯示待命中 (綠燈)。
+          </div>
+        </div>
+
+        <div class="flex gap-3 items-start">
+          <span class="w-5 h-5 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-[10px] flex-none mt-0.5">3</span>
+          <div>
+            <b class="text-white">起跑與切片</b>：起跑點鳴槍或按手動起跑，底部的起跑按鈕會自動變為醒目的紅色呼吸燈 <b>[⏹️ 停止計時 (STOP)]</b>，終點主機自動動態跳秒並高速切片寫入時間畫卷。
+          </div>
+        </div>
+
+        <div class="flex gap-3 items-start">
+          <span class="w-5 h-5 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-[10px] flex-none mt-0.5">4</span>
+          <div>
+            <b class="text-white">停止計時與判讀</b>：等最後一位選手通過終點後，直接點擊 <b>[⏹️ 停止計時]</b>，計時自動鎖定，判讀抽屜自動滑出！游標滑至選手胸口，依序按「1道」～「6道」快速綁定成績。
+          </div>
+        </div>
+
+        <div class="flex gap-3 items-start">
+          <span class="w-5 h-5 rounded-full bg-red-600 text-white font-bold flex items-center justify-center text-[10px] flex-none mt-0.5">5</span>
+          <div>
+            <b class="text-white">存檔下一組</b>：點「📸 證明圖」存相簿，點「⬇ 收起回到攝影」，按「重置」準備下一組！
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="bg-slate-900 border-t border-slate-800 py-4 px-4 text-center text-xs text-slate-500">
+    ProFinish PWA v2.0 · 校園田徑終點攝影電子計時系統 · 2026 專案
+  </footer>
+
+</body>
+</html>

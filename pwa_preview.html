@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>PWA 自訂 App 圖示與全螢幕無網址列效果展示</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600;700;900&family=JetBrains+Mono:wght@700;900&display=swap');
+    body {
+      font-family: 'Noto Sans TC', sans-serif;
+      background-color: #0b0f19;
+      color: #f1f5f9;
+    }
+  </style>
+</head>
+<body class="p-8 w-[1300px] mx-auto">
+  
+  <div class="flex items-center justify-between border-b border-slate-800 pb-5 mb-8">
+    <div class="flex items-center gap-3">
+      <img src="./apple-touch-icon.png" class="w-12 h-12 rounded-2xl shadow-lg border border-purple-500/40" />
+      <div>
+        <h1 class="text-2xl font-black text-white">
+          ProFinish PWA · 手機加入主畫面自訂 App 圖示與無網址列設定
+        </h1>
+        <p class="text-xs text-slate-400 mt-0.5">
+          已啟用 <span class="text-emerald-400 font-bold">display: standalone</span> · 專屬高解析田徑終點攝影 App Icon
+        </p>
+      </div>
+    </div>
+    <div class="px-3 py-1.5 rounded-lg bg-purple-950 border border-purple-500/40 text-purple-300 font-bold text-xs flex items-center gap-2">
+      <span>📱</span>
+      <span>iOS Safari & Android Chrome 完美適配</span>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-2 gap-8">
+    
+    <!-- Left: Phone Home Screen with App Icon -->
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl flex flex-col items-center">
+      <div class="w-full flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
+        <span class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🏠</span> 效果一：手機主畫面上的 App 圖示
+        </span>
+        <span class="text-[11px] bg-slate-800 text-slate-300 px-2.5 py-0.5 rounded-full font-mono">HOME SCREEN</span>
+      </div>
+
+      <!-- Simulated iOS Home Screen Grid -->
+      <div class="w-[360px] h-[480px] bg-gradient-to-b from-indigo-950 via-slate-900 to-black rounded-[40px] border-4 border-slate-700 p-6 flex flex-col justify-between shadow-2xl relative overflow-hidden">
+        
+        <!-- Top Status Bar -->
+        <div class="flex justify-between items-center text-[10px] text-white/80 font-semibold px-2">
+          <span>09:41</span>
+          <div class="w-20 h-4 bg-black rounded-full mx-auto"></div>
+          <span>5G 100%</span>
+        </div>
+
+        <!-- App Icons Grid -->
+        <div class="grid grid-cols-4 gap-4 mt-6">
+          <!-- Dummy App 1 -->
+          <div class="flex flex-col items-center gap-1 opacity-40">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center text-xl">📅</div>
+            <span class="text-[10px] text-white">日曆</span>
+          </div>
+          <!-- Dummy App 2 -->
+          <div class="flex flex-col items-center gap-1 opacity-40">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center text-xl">📷</div>
+            <span class="text-[10px] text-white">相機</span>
+          </div>
+          <!-- Dummy App 3 -->
+          <div class="flex flex-col items-center gap-1 opacity-40">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center text-xl">🗺️</div>
+            <span class="text-[10px] text-white">地圖</span>
+          </div>
+          <!-- Dummy App 4 -->
+          <div class="flex flex-col items-center gap-1 opacity-40">
+            <div class="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center text-xl">⚙️</div>
+            <span class="text-[10px] text-white">設定</span>
+          </div>
+
+          <!-- THE HIGHLIGHTED PROFONISH APP -->
+          <div class="flex flex-col items-center gap-1 relative group scale-105">
+            <div class="w-14 h-14 rounded-2xl shadow-2xl overflow-hidden border-2 border-amber-400 ring-4 ring-amber-400/20">
+              <img src="./apple-touch-icon.png" class="w-full h-full object-cover" />
+            </div>
+            <span class="text-[10px] font-bold text-amber-300">ProFinish</span>
+            <div class="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full border border-white"></div>
+          </div>
+        </div>
+
+        <!-- Annotation Callout -->
+        <div class="bg-slate-900/90 border border-amber-500/40 rounded-2xl p-3 text-xs text-amber-200 mt-auto shadow-lg">
+          <p class="font-bold flex items-center gap-1 mb-1">
+            <span>✨</span> 專屬高清田徑終點攝影 App Icon
+          </p>
+          <p class="text-[11px] text-slate-300 leading-relaxed">
+            加入主畫面後自動呈現自訂的電子計時與高速相機圖示，與原生 App 100% 相同質感！
+          </p>
+        </div>
+
+        <!-- Home Bar -->
+        <div class="w-32 h-1 bg-white/40 rounded-full mx-auto mt-2"></div>
+      </div>
+    </div>
+
+    <!-- Right: Standalone Fullscreen (No browser URL bar) -->
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl flex flex-col items-center">
+      <div class="w-full flex items-center justify-between mb-4 border-b border-slate-800 pb-3">
+        <span class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🚀</span> 效果二：點開後隱藏網址列 (Standalone 全螢幕)
+        </span>
+        <span class="text-[11px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-2.5 py-0.5 rounded-full font-mono">STANDALONE MODE</span>
+      </div>
+
+      <!-- Simulated Phone Screen Opened in Standalone Mode -->
+      <div class="w-[360px] h-[480px] bg-black rounded-[40px] border-4 border-slate-700 p-3 flex flex-col justify-between shadow-2xl relative overflow-hidden">
+        
+        <!-- Clean iOS Status Bar (NO Safari URL bar!) -->
+        <div class="flex justify-between items-center text-[10px] text-white/90 font-semibold px-4 pt-1">
+          <span>09:41</span>
+          <div class="w-20 h-4 bg-slate-900 rounded-full mx-auto"></div>
+          <span class="text-emerald-400 font-mono">100%</span>
+        </div>
+
+        <!-- Notice: No Safari Address Bar or Navigation Bar -->
+        <div class="bg-emerald-950/80 border border-emerald-500/30 rounded-xl py-1 px-3 text-[10px] text-emerald-300 font-bold text-center mt-1">
+          ✔ 已完全隱藏瀏覽器網址列與底部導航列
+        </div>
+
+        <!-- Fullscreen Finish Viewfinder Inside Phone -->
+        <div class="relative bg-slate-950 rounded-2xl border border-slate-800 my-2 flex-1 overflow-hidden flex flex-col justify-between p-3">
+          
+          <!-- Top HUD -->
+          <div class="flex justify-between items-center text-[10px]">
+            <span class="bg-slate-900 px-2 py-0.5 rounded text-white font-bold">100m · 第 1 組 ▼</span>
+            <span class="font-mono text-emerald-400 font-black bg-slate-900 px-2 py-0.5 rounded border border-emerald-500/50">00:00.00</span>
+            <span class="bg-red-600 text-white px-2 py-0.5 rounded font-bold">🎞️ 判讀</span>
+          </div>
+
+          <!-- Red Slit Line in Center -->
+          <div class="absolute inset-y-0 left-1/2 w-0.5 bg-red-500 shadow-[0_0_10px_#ef4444]"></div>
+          <div class="absolute top-10 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">
+            終點線 50%
+          </div>
+
+          <!-- Bottom Action Buttons -->
+          <div class="grid grid-cols-4 gap-1 text-[10px] z-10">
+            <span class="bg-emerald-600 text-white py-1.5 rounded-lg font-bold text-center">🎯 待命</span>
+            <span class="bg-amber-600 text-white py-1.5 rounded-lg font-bold text-center">⚡ 起跑</span>
+            <span class="bg-slate-800 text-slate-300 py-1.5 rounded-lg text-center">重置</span>
+            <span class="bg-red-600 text-white py-1.5 rounded-lg font-bold text-center">🎞️ 判讀</span>
+          </div>
+        </div>
+
+        <!-- Home Bar -->
+        <div class="w-32 h-1 bg-white/40 rounded-full mx-auto"></div>
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

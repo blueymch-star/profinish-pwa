@@ -1,0 +1,16 @@
+# Binaries & Large Tools
+cloudflared.exe
+*.exe
+
+# SSL Certificates & Private Keys
+cert.pfx
+cert.pem
+key.pem
+*.key
+*.pfx
+
+# Logs & OS artifacts
+*.log
+.DS_Store
+Thumbs.db
+node_modules/

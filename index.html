@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="h-full bg-black text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ProFinish">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#090d16">
+  <title>ProFinish 終點攝影電子計時系統</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <link rel="shortcut icon" href="./favicon.png">
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- PeerJS WebRTC P2P Library for 4-digit zero-config pairing -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            athletic: {
+              red: '#ef4444',
+              gold: '#f59e0b',
+              green: '#10b981',
+              blue: '#0284c7',
+              dark: '#000000'
+            }
+          },
+          fontFamily: {
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* iOS Safari Safe Area Inset Support */
+    body {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    input, textarea {
+      -webkit-user-select: auto;
+      user-select: auto;
+    }
+    /* Custom Scroller styling */
+    ::-webkit-scrollbar {
+      height: 6px;
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    .slit-guide-line {
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.9), 0 0 16px rgba(239, 68, 68, 0.6);
+    }
+    .digit-glow {
+      text-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
+    }
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col overflow-hidden bg-black font-sans select-none antialiased">
+
+  <!-- ================= VIEW 1: FINISH HOST VIEW (終點攝影主機 - 全螢幕攝影優先) ================= -->
+  <main id="finishHostView" class="fixed inset-0 w-full h-full overflow-hidden bg-black flex flex-col">
+
+    <!-- 1. FULLSCREEN CAMERA FEED & SLIT GUIDE (佔據全螢幕畫面) -->
+    <div class="absolute inset-0 w-full h-full overflow-hidden flex items-center justify-center bg-black">
+      <video id="cameraVideo" playsinline muted autoplay class="w-full h-full object-cover"></video>
+      
+      <!-- Slit Target Line (垂直終點紅色基準線，貫穿全畫面) -->
+      <div id="slitGuideLine" class="absolute top-0 bottom-0 w-0.5 bg-red-500 slit-guide-line pointer-events-none transition-transform z-10" style="left: 50%;">
+        <div class="absolute -translate-x-1/2 bg-red-600/90 backdrop-blur text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow pointer-events-auto cursor-pointer" style="top: max(calc(env(safe-area-inset-top, 0px) + 56px), 64px);" onclick="app.toggleSlitSlider()">
+          終點基準線 <span id="slitPosLabel">50%</span>
+        </div>
+
+        <!-- 6道高低對應標示：螢幕最下方為第 1 道依序往上至第 6 道 -->
+        <div class="absolute left-1 flex flex-col justify-between py-1 pointer-events-none text-[10px] font-mono font-bold select-none opacity-85 whitespace-nowrap" style="top: max(calc(env(safe-area-inset-top, 0px) + 100px), 110px); bottom: max(calc(env(safe-area-inset-bottom, 0px) + 72px), 80px);">
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+            <span id="slitLaneText6" class="px-1.5 py-0.5 rounded bg-black/75 text-emerald-300 border border-emerald-500/30 backdrop-blur">6道(綠) ⬆頂</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+            <span id="slitLaneText5" class="px-1.5 py-0.5 rounded bg-black/75 text-orange-300 border border-orange-500/30 backdrop-blur">5道(橘)</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+            <span id="slitLaneText4" class="px-1.5 py-0.5 rounded bg-black/75 text-purple-300 border border-purple-500/30 backdrop-blur">4道(紫)</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+            <span id="slitLaneText3" class="px-1.5 py-0.5 rounded bg-black/75 text-yellow-300 border border-yellow-500/30 backdrop-blur">3道(黃)</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+            <span id="slitLaneText2" class="px-1.5 py-0.5 rounded bg-black/75 text-blue-300 border border-blue-500/30 backdrop-blur">2道(藍)</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>
+            <span id="slitLaneText1" class="px-1.5 py-0.5 rounded bg-black/75 text-red-400 border border-red-500/30 backdrop-blur">1道(紅) ⬇底</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Slit Position Floating Slider (點擊上方標籤可展開微調) -->
+      <div id="floatingSlitSlider" class="absolute inset-x-8 glass-panel px-4 py-2 rounded-xl flex items-center gap-2 z-20 hidden" style="top: max(calc(env(safe-area-inset-top, 0px) + 56px), 64px);">
+        <span class="text-[11px] text-slate-300 whitespace-nowrap">終點線左右微調:</span>
+        <input type="range" id="slitRange" min="5" max="95" value="50" oninput="app.updateSlitPosition(this.value)" class="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500">
+        <button onclick="app.toggleSlitSlider()" class="text-xs text-slate-400 hover:text-white px-2">關閉</button>
+      </div>
+
+      <!-- Camera Info Badge (Top Left overlay) -->
+      <div class="absolute left-3 flex flex-col gap-1 pointer-events-none z-10 opacity-70" style="top: max(calc(env(safe-area-inset-top, 0px) + 52px), 56px);">
+        <span id="camFpsBadge" class="bg-black/60 backdrop-blur text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20">
+          30 FPS
+        </span>
+        <span id="camLensBadge" class="bg-black/60 backdrop-blur text-[10px] font-mono text-slate-300 px-1.5 py-0.5 rounded border border-slate-700/40">
+          主鏡頭 1x
+        </span>
+      </div>
+    </div>
+
+    <!-- 2. TOP FLOATING MINIMAL HUD (頂部懸浮極簡控制列) -->
+    <header class="absolute inset-x-3 flex items-center justify-between gap-2 z-20 pointer-events-none" style="top: max(calc(env(safe-area-inset-top, 0px) + 8px), 12px);">
+      <!-- Left: Event Info Pill (Click to open Tools Drawer) -->
+      <div class="pointer-events-auto flex items-center gap-1.5">
+        <button onclick="app.toggleToolsDrawer()" class="glass-panel px-3 py-1.5 rounded-xl flex items-center gap-2 text-white shadow-lg active:scale-95 transition">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="hudEventBadge" class="font-bold text-xs">100m · 第 1 組</span>
+          <span class="text-[10px] text-slate-400">▼</span>
+        </button>
+      </div>
+
+      <!-- Center: Big Live Clock Display (大字即時碼錶) -->
+      <div class="pointer-events-auto">
+        <div id="liveClockDisplay" class="font-mono text-xl sm:text-2xl font-black tracking-tight text-emerald-400 digit-glow px-3 py-1 rounded-xl glass-panel shadow-lg border border-emerald-500/30">
+          00:00.00
+        </div>
+      </div>
+
+      <!-- Right: Action Buttons (Tools Drawer & Results Review) -->
+      <div class="pointer-events-auto flex items-center gap-1.5">
+        <!-- Button to open Results & Slit-Scan Review Drawer -->
+        <button onclick="app.toggleReviewDrawer()" class="glass-panel p-2 rounded-xl text-slate-200 hover:text-white shadow-lg active:scale-95 transition flex items-center gap-1 text-xs font-semibold" title="判讀畫卷與成績">
+          <span>🎞️</span>
+          <span class="hidden xs:inline">判讀</span>
+        </button>
+
+        <!-- Button to open Settings & Meet Tools Drawer -->
+        <button onclick="app.toggleToolsDrawer()" class="glass-panel p-2 rounded-xl text-slate-200 hover:text-white shadow-lg active:scale-95 transition" title="功能與設定選單">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 3. BOTTOM FLOATING QUICK TRIGGER BAR (底部懸浮極簡觸控操作列) -->
+    <footer class="absolute inset-x-3 flex items-center justify-center gap-2 z-20 pointer-events-none" style="bottom: max(calc(env(safe-area-inset-bottom, 0px) + 12px), 20px);">
+      <div class="glass-panel p-1.5 rounded-2xl flex items-center gap-2 shadow-2xl border border-slate-700/60 pointer-events-auto max-w-md w-full justify-between">
+        <!-- ARM / DISARM Button -->
+        <button id="btnArmSystem" onclick="app.toggleArm()" class="flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white shadow-md active:scale-95">
+          <span>🎯</span>
+          <span id="armBtnText">待命中</span>
+        </button>
+
+        <!-- Manual Start / Stop Trigger Button -->
+        <button id="btnManualTrigger" onclick="app.toggleStartOrStop()" class="flex-1 py-2.5 px-3 rounded-xl font-bold text-xs transition flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-500 text-white shadow-md active:scale-95">
+          <span id="manualTriggerIcon">⚡</span>
+          <span id="manualTriggerText">手動起跑</span>
+        </button>
+
+        <!-- Reset Button -->
+        <button id="btnResetTimer" onclick="app.resetCurrentHeat()" class="py-2.5 px-3 rounded-xl font-semibold text-xs transition bg-slate-800/80 hover:bg-slate-700 text-slate-300 active:scale-95">
+          重置
+        </button>
+
+        <!-- Review Scrubber Launcher -->
+        <button onclick="app.toggleReviewDrawer()" class="py-2.5 px-3.5 rounded-xl font-bold text-xs transition bg-red-600 hover:bg-red-500 text-white shadow-md flex items-center gap-1 active:scale-95">
+          <span>🎞️</span>
+          <span>判讀</span>
+        </button>
+      </div>
+    </footer>
+
+
+    <!-- ================= COLLAPSIBLE DRAWER 1: 賽事設定與相機控制 (收縮抽屜) ================= -->
+    <div id="toolsDrawer" class="fixed inset-y-0 right-0 max-w-sm w-full bg-slate-900/95 backdrop-blur-xl border-l border-slate-800 p-5 z-40 flex flex-col gap-4 shadow-2xl transition-transform duration-300 translate-x-full overflow-y-auto" style="padding-top: max(calc(env(safe-area-inset-top, 0px) + 16px), 20px); padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) + 16px), 20px);">
+      
+      <!-- Drawer Header -->
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-2">
+          <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-red-500 to-amber-500 flex items-center justify-center font-bold text-xs text-white">⚡</div>
+          <h2 class="font-bold text-sm text-white">賽務與系統選單</h2>
+        </div>
+        <button onclick="app.toggleToolsDrawer()" class="w-8 h-8 rounded-lg bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white font-mono text-base">✕</button>
+      </div>
+
+      <!-- Mode Switch (終點主機 vs 起跑發送器) -->
+      <div>
+        <label class="block text-[11px] text-slate-400 mb-1.5 font-medium">切換操作模式：</label>
+        <div class="grid grid-cols-2 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+          <button id="btnModeFinish" onclick="app.switchRole('finish')" class="py-2 rounded-lg text-white bg-slate-800 font-bold flex items-center justify-center gap-1.5">
+            <span>🏁</span> 終點攝影主機
+          </button>
+          <button id="btnModeStart" onclick="app.switchRole('start')" class="py-2 rounded-lg text-slate-400 hover:text-white flex items-center justify-center gap-1.5">
+            <span>🔫</span> 起跑發送器
+          </button>
+        </div>
+      </div>
+
+      <!-- Event Distance Switcher (60m / 100m / 200m) -->
+      <div>
+        <label class="block text-[11px] text-slate-400 mb-1.5 font-medium">競賽項目距離：</label>
+        <div class="grid grid-cols-3 gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-bold">
+          <button id="btnDist60" onclick="app.setDistance(60)" class="py-2 rounded-lg text-slate-400 hover:text-white transition">60m</button>
+          <button id="btnDist100" onclick="app.setDistance(100)" class="py-2 rounded-lg bg-red-600 text-white shadow transition">100m</button>
+          <button id="btnDist200" onclick="app.setDistance(200)" class="py-2 rounded-lg text-slate-400 hover:text-white transition">200m</button>
+        </div>
+      </div>
+
+      <!-- Current Heat Management & 1~6 Lane Roster Preview -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-semibold text-slate-200">🏃 當前組別與 1～6 道選手名單</label>
+          <div class="flex items-center gap-1">
+            <button onclick="app.stepHeat(-1)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold">◀ 上組</button>
+            <button onclick="app.stepHeat(1)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold">下組 ▶</button>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <select id="selectHeat" onchange="app.switchHeat(this.value)" class="flex-1 bg-slate-900 border border-slate-700 text-slate-100 rounded-lg p-2 text-xs focus:ring-1 focus:ring-red-500 outline-none">
+            <option value="1">第 1 組</option>
+          </select>
+          <button onclick="app.addNewHeat()" class="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold whitespace-nowrap" title="新增組別">
+            +組別
+          </button>
+        </div>
+        <!-- 1~6 道選手清單即時預覽 -->
+        <div id="drawerRosterList" class="grid grid-cols-2 gap-1 pt-1 text-[11px]">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Camera & Slit Settings -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2.5 text-xs">
+        <span class="font-semibold text-slate-200">📷 相機與狹縫校正</span>
+        
+        <div>
+          <span class="text-slate-400 text-[11px] block mb-1">切換相機鏡頭：</span>
+          <div class="flex gap-1.5">
+            <select id="cameraSelect" onchange="app.switchCamera(this.value)" class="flex-1 bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-lg p-1.5 outline-none">
+              <option value="">載入中...</option>
+            </select>
+            <button onclick="app.toggleCameraTorch()" id="btnTorch" class="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white" title="補光燈">
+              💡
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <span class="text-slate-400 text-[11px] block mb-1">狹縫切片寬度 (Slit Width)：</span>
+          <select id="selectSlitWidth" onchange="app.setSlitWidth(this.value)" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-slate-200">
+            <option value="1">1 px (極致高解析 · 絲滑無顆粒)</option>
+            <option value="2" selected>2 px (推薦 · 高清細緻平衡)</option>
+            <option value="3">3 px (微寬切片)</option>
+            <option value="4">4 px (超速快跑模式)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Zero Offset Calibration Card (歸零偏差校正) -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2 text-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-semibold text-slate-200 flex items-center gap-1.5">
+            <span>🎯</span> 歸零偏差校正 (Zero Offset)
+          </span>
+          <span id="zeroOffsetDisplay" class="font-mono text-emerald-400 font-bold text-xs bg-slate-900 px-2 py-0.5 rounded border border-slate-800">+0.000s</span>
+        </div>
+        <p class="text-[11px] text-slate-400 leading-tight">
+          田徑規則要求歸零閃光前端須為 0.00。若測試發現閃光前端有微秒誤差，可在畫卷點擊「設為歸零基準」或在此微調。
+        </p>
+        <div class="grid grid-cols-5 gap-1 font-mono text-[11px]">
+          <button onclick="app.adjustZeroOffset(-10)" class="py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 active:scale-95">-10ms</button>
+          <button onclick="app.adjustZeroOffset(-1)" class="py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 active:scale-95">-1ms</button>
+          <button onclick="app.adjustZeroOffset(1)" class="py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 active:scale-95">+1ms</button>
+          <button onclick="app.adjustZeroOffset(10)" class="py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 active:scale-95">+10ms</button>
+          <button onclick="app.resetZeroOffset()" class="py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold border border-slate-700 active:scale-95">重設</button>
+        </div>
+      </div>
+
+      <!-- 4-digit Room Code for WebRTC P2P Sync -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+        <span class="text-xs font-semibold text-slate-200">雙機連線房間配對碼</span>
+        <div class="flex items-center justify-between">
+          <span id="myRoomCodeDisplay" class="font-mono text-2xl font-black text-red-400 tracking-widest bg-slate-900 px-3 py-1 rounded-lg border border-slate-700">
+            2026
+          </span>
+          <div id="syncBadge" class="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
+            <span id="syncDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="syncText">等待起跑機連線</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Test Gunshot Audio & Zero-Test Buttons -->
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="app.playGunshotAudio()" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold text-xs text-amber-400 flex items-center justify-center gap-1 transition">
+          <span>💥</span> 試聽發令音效
+        </button>
+        <button onclick="app.triggerZeroTest()" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold text-xs text-emerald-400 flex items-center justify-center gap-1 transition" title="執行全螢幕白光閃爍歸零驗證">
+          <span>⚡</span> 歸零閃光測試
+        </button>
+      </div>
+
+      <!-- Link to HTML Manual & PC Admin -->
+      <div class="grid grid-cols-2 gap-2">
+        <a href="./manual.html" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold text-xs text-sky-400 flex items-center justify-center gap-1 transition">
+          <span>📖</span> 操作手冊
+        </a>
+        <a href="./admin.html" class="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold text-xs text-emerald-400 flex items-center justify-center gap-1 transition">
+          <span>💻</span> 電腦後台
+        </a>
+      </div>
+
+      <!-- Close Drawer Button -->
+      <div class="mt-auto pt-3 border-t border-slate-800">
+        <button onclick="app.toggleToolsDrawer()" class="w-full py-2.5 rounded-xl bg-red-600 hover:bg-red-500 font-bold text-xs text-white shadow">
+          關閉選單，回到攝影畫面
+        </button>
+      </div>
+    </div>
+
+
+    <!-- ================= COLLAPSIBLE DRAWER 2: 終點掃描畫卷與判讀工作台 (收縮工作台) ================= -->
+    <div id="reviewDrawer" class="fixed inset-0 bg-slate-950/98 backdrop-blur-2xl z-40 flex flex-col shadow-2xl transition-transform duration-300 translate-y-full overflow-hidden">
+      
+      <!-- Review Header Bar with Back-to-Camera button -->
+      <div class="flex-none bg-slate-900/95 border-b border-slate-800 px-3 py-2 flex flex-col gap-1.5 z-10" style="padding-top: max(calc(env(safe-area-inset-top, 0px) + 8px), 10px);">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="text-base">🎞️</span>
+            <h2 class="font-bold text-xs sm:text-sm text-white truncate">終點畫卷判讀</h2>
+          </div>
+
+          <div class="flex items-center gap-1.5 shrink-0">
+            <!-- Canvas Zoom controls with Aspect Ratio Presets -->
+            <div class="flex items-center gap-1 font-mono text-[11px] bg-slate-950 p-1 rounded-lg border border-slate-800">
+              <button onclick="app.zoomCanvas(0.8)" class="px-1.5 py-0.5 bg-slate-900 rounded text-slate-300 hover:text-white font-bold active:scale-95 text-xs">-</button>
+              <span id="zoomLevelDisplay" class="text-amber-400 font-bold px-1 min-w-[32px] text-center">1.0x</span>
+              <button onclick="app.zoomCanvas(1.25)" class="px-1.5 py-0.5 bg-slate-900 rounded text-slate-300 hover:text-white font-bold active:scale-95 text-xs">+</button>
+              <div class="h-3.5 w-[1px] bg-slate-800 mx-0.5"></div>
+              <!-- Quick Presets -->
+              <button onclick="app.setCanvasZoom(4.0)" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px]" title="4倍縮放">4x</button>
+              <button onclick="app.setCanvasZoom(8.0)" class="px-1.5 py-0.5 rounded bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-700/60 text-[10px] font-bold" title="8倍身形比例還原">8x🏃</button>
+              <button onclick="app.setCanvasZoom(16.0)" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px]" title="16倍極致細節">16x</button>
+            </div>
+
+            <!-- Big Collapse Button to go back to Camera -->
+            <button onclick="app.toggleReviewDrawer()" class="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs flex items-center gap-1 shadow whitespace-nowrap">
+              <span>⬇</span>
+              <span>回攝影</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Row 2: Heat Selector & Prev/Next Stepper -->
+        <div class="flex items-center gap-1.5">
+          <button onclick="app.stepHeat(-1)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold shrink-0">◀ 上組</button>
+          <select id="reviewSelectHeat" onchange="app.switchHeat(this.value)" class="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-amber-400 outline-none truncate">
+            <option value="1">第 1 組</option>
+          </select>
+          <button onclick="app.stepHeat(1)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-bold shrink-0">下組 ▶</button>
+          <span id="reviewHeatSubtitle" class="hidden sm:inline text-[10px] text-slate-400 truncate"></span>
+        </div>
+      </div>
+
+      <!-- Interactive Slit-Scan Canvas Viewport -->
+      <div id="canvasViewport" class="flex-1 relative overflow-auto bg-black cursor-crosshair select-none min-h-[200px]" style="touch-action: none;">
+        <canvas id="slitCanvas" class="h-full block" style="image-rendering: auto;"></canvas>
+
+        <!-- Vertical Scrubber Cursor Line (Yellow Crosshair Reticle) -->
+        <div id="scrubberCursor" class="absolute top-0 bottom-0 w-0.5 bg-yellow-400 pointer-events-none z-20" style="left: 120px; box-shadow: 0 0 10px rgba(250, 204, 21, 0.9);">
+          <!-- Top Time Badge -->
+          <div class="absolute top-2 -translate-x-1/2 bg-yellow-400 text-slate-950 font-mono font-black text-[11px] px-2 py-0.5 rounded shadow-lg whitespace-nowrap">
+            <span id="cursorTimeDisplay">00:00.00</span>
+          </div>
+          <!-- Torso Chest Reticle Target (黃色十字圓圈游標) -->
+          <div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-10 h-10 rounded-full border-2 border-yellow-400 bg-yellow-400/25 shadow-[0_0_14px_rgba(250,204,21,0.9)] flex items-center justify-center">
+            <div class="absolute w-full h-[1.5px] bg-yellow-400"></div>
+            <div class="absolute h-full w-[1.5px] bg-yellow-400"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
+          </div>
+        </div>
+
+        <!-- Empty state placeholder -->
+        <div id="canvasEmptyPrompt" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-2 p-4 text-center">
+          <div class="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-xl">
+            ⏱️
+          </div>
+          <p class="text-xs font-medium text-slate-400">尚未記錄到選手終點影像</p>
+          <p class="text-[11px] text-slate-600 max-w-sm">起跑後系統會自動高速掃描終點線，完成後可在此滑動游標判讀</p>
+        </div>
+      </div>
+
+      <!-- Scrubber Stepper & Lane Binding Toolbar -->
+      <div class="flex-none bg-slate-900 border-t border-slate-800 p-2.5 flex flex-col gap-2 z-10" style="padding-bottom: max(calc(calc(env(safe-area-inset-bottom, 0px) + 12px)), 12px);">
+        <!-- Steppers & Precision Time readout -->
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex items-center gap-1 font-mono">
+            <span class="text-[10px] text-slate-400 mr-1">微調:</span>
+            <button onclick="app.stepCursor(-0.05)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">-0.05s</button>
+            <button onclick="app.stepCursor(-0.01)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold">-0.01s</button>
+            <button onclick="app.stepCursor(0.01)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold">+0.01s</button>
+            <button onclick="app.stepCursor(0.05)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">+0.05s</button>
+            <button onclick="app.calibrateZeroFromCurrentCursor()" class="ml-1 px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1 shadow active:scale-95" title="將當前游標位置設為 00:00.000 歸零起點">
+              <span>🎯</span> 設為歸零基準
+            </button>
+          </div>
+
+          <div class="flex items-center gap-2 bg-slate-950 px-2.5 py-1 rounded-lg border border-slate-800">
+            <span class="text-[10px] text-slate-400">官方成績 (0.01s進位):</span>
+            <span id="officialRoundedTime" class="font-mono text-sm sm:text-base font-black text-amber-400">--:--.--</span>
+          </div>
+        </div>
+
+        <!-- 1 ~ 6 Lane Quick Binding Buttons (號碼衣顏色: 紅、藍、黃、紫、橘、綠；螢幕下方1道 ➜ 螢幕上方6道) -->
+        <div class="flex items-center gap-1.5 overflow-x-auto py-0.5">
+          <span class="text-[11px] font-bold text-slate-400 whitespace-nowrap mr-1">一鍵填入:</span>
+          <button id="btnAssignLane1" onclick="app.assignTimeToLane(1)" class="flex-1 min-w-[54px] py-1.5 px-1 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-xs text-center shadow truncate" title="螢幕最下方道次">1道(紅) ⬇</button>
+          <button id="btnAssignLane2" onclick="app.assignTimeToLane(2)" class="flex-1 min-w-[52px] py-1.5 px-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs text-center shadow truncate">2道(藍)</button>
+          <button id="btnAssignLane3" onclick="app.assignTimeToLane(3)" class="flex-1 min-w-[52px] py-1.5 px-1 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-black text-xs text-center shadow truncate">3道(黃)</button>
+          <button id="btnAssignLane4" onclick="app.assignTimeToLane(4)" class="flex-1 min-w-[52px] py-1.5 px-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs text-center shadow truncate">4道(紫)</button>
+          <button id="btnAssignLane5" onclick="app.assignTimeToLane(5)" class="flex-1 min-w-[52px] py-1.5 px-1 rounded-lg bg-orange-500 hover:bg-orange-400 text-white font-bold text-xs text-center shadow truncate">5道(橘)</button>
+          <button id="btnAssignLane6" onclick="app.assignTimeToLane(6)" class="flex-1 min-w-[54px] py-1.5 px-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs text-center shadow truncate" title="螢幕最上方道次">6道(綠) ⬆</button>
+        </div>
+      </div>
+
+      <!-- Results Table Drawer Area (Scrollable bottom sheet) -->
+      <div class="flex-none bg-slate-950 border-t border-slate-800 max-h-48 overflow-y-auto p-2">
+        <div class="flex items-center justify-between pb-1.5 border-b border-slate-800 text-xs">
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-slate-200">📋 本組成績</span>
+            <span id="assignedCountBadge" class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-800 text-emerald-400">已判讀 0/6</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <button onclick="app.syncCurrentHeatToBackend(true)" class="px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-[10px] font-semibold">☁️ 傳回後台</button>
+            <button onclick="app.exportResultsCsv()" class="px-2 py-0.5 rounded bg-slate-800 text-slate-200 text-[10px] font-medium">📊 成績單</button>
+            <button onclick="app.exportPhotoFinishProof()" class="px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-semibold">📸 證明圖</button>
+          </div>
+        </div>
+
+        <table class="w-full text-left text-xs border-collapse mt-1">
+          <thead>
+            <tr class="text-[10px] text-slate-400 border-b border-slate-800">
+              <th class="py-1 px-1.5 font-mono">道次 (號碼衣)</th>
+              <th class="py-1 px-1.5">班級姓名</th>
+              <th class="py-1 px-1.5 font-mono">成績</th>
+              <th class="py-1 px-1.5 font-mono text-center">名次</th>
+              <th class="py-1 px-1.5 text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody id="lanesTableBody" class="divide-y divide-slate-800/60">
+            <!-- Dynamic 8 Lanes rendered by JS -->
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </main>
+
+
+  <!-- ================= VIEW 2: START SENDER VIEW (起跑發送器 - 極簡全螢幕) ================= -->
+  <main id="startSenderView" class="fixed inset-0 w-full h-full overflow-auto p-4 bg-slate-950 text-slate-100 hidden flex flex-col justify-between" style="padding-top: max(calc(env(safe-area-inset-top, 0px) + 16px), 16px); padding-bottom: max(calc(env(safe-area-inset-bottom, 0px) + 16px), 16px);">
+    <div class="max-w-md mx-auto w-full flex flex-col gap-3">
+      
+      <!-- Top Bar: Back to Finish Host -->
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">🔫</span>
+          <h2 class="font-bold text-sm text-white">無線起跑發送器</h2>
+        </div>
+        <button onclick="app.switchRole('finish')" class="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-semibold hover:text-white">
+          切換回終點機 🏁
+        </button>
+      </div>
+
+      <!-- Current Heat & 1~6 Lane Roster Card for Starter at Starting Line -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-200">🏃 當前起跑組別與 1～6 道檢錄名單</span>
+          <div class="flex items-center gap-1">
+            <button onclick="app.stepHeat(-1)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold">◀ 上組</button>
+            <button onclick="app.stepHeat(1)" class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold">下組 ▶</button>
+          </div>
+        </div>
+        <select id="senderSelectHeat" onchange="app.switchHeat(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-bold text-amber-400 outline-none">
+          <option value="1">第 1 組</option>
+        </select>
+        <div id="senderRosterList" class="grid grid-cols-2 gap-1.5 pt-1 text-[11px]">
+          <!-- Dynamic 1~6 lanes populated by JS -->
+        </div>
+      </div>
+
+      <!-- 4-digit code pairing card -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
+        <label class="block text-[11px] text-slate-400">終點機 4 位數配對碼</label>
+        <div class="flex gap-2">
+          <input type="text" id="inputRoomCode" maxlength="4" placeholder="例如 2026" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-center font-mono text-xl tracking-widest text-white outline-none">
+          <button onclick="app.connectToFinishHost()" id="btnConnectHost" class="px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 font-bold text-xs text-white shadow">
+            連線
+          </button>
+        </div>
+        <div class="flex justify-between items-center text-xs font-mono pt-1">
+          <span class="text-slate-400 text-[11px]">同步狀態:</span>
+          <span id="senderSyncBadge" class="text-amber-400 font-bold">未連線</span>
+        </div>
+        <div class="flex justify-between items-center text-xs font-mono border-t border-slate-800/60 pt-1.5">
+          <span class="text-slate-400 text-[11px]">終點待命狀態:</span>
+          <span id="senderHostArmBadge" class="text-emerald-400 font-bold">🟢 待命中 (可起跑)</span>
+        </div>
+      </div>
+
+      <!-- Trigger 1: Big Foolproof Touch Trigger Button -->
+      <button id="btnBigTrigger" ontouchstart="app.senderSendTrigger()" onclick="app.senderSendTrigger()" class="w-full py-12 rounded-3xl bg-gradient-to-br from-red-600 via-red-500 to-amber-600 active:scale-95 transition text-white font-black text-2xl tracking-wider shadow-2xl shadow-red-600/40 border border-red-400/40 flex flex-col items-center justify-center gap-2 cursor-pointer">
+        <span class="text-5xl">🔫</span>
+        <span>鳴槍起跑 (START)</span>
+        <span class="text-xs font-normal opacity-80">按一下瞬間發送起跑訊號</span>
+      </button>
+
+      <!-- Starter Sound Selector -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between text-xs">
+        <div>
+          <span class="text-slate-200 font-semibold block">發令音效類型</span>
+          <span class="text-[10px] text-slate-400">真槍爆鳴 或 電子發令高音</span>
+        </div>
+        <div class="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+          <button id="btnSoundGunshot" onclick="app.setStarterSound('gunshot')" class="px-2.5 py-1 rounded text-xs font-bold transition bg-red-600 text-white shadow">
+            💥 真槍 (BANG)
+          </button>
+          <button id="btnSoundBeep" onclick="app.setStarterSound('beep')" class="px-2.5 py-1 rounded text-xs font-bold transition text-slate-400 hover:text-white">
+            🚨 電子音 (BEEP)
+          </button>
+        </div>
+      </div>
+
+      <!-- Trigger 2: Self-Starter Auto Call -->
+      <button onclick="app.startSelfStarterSequence()" id="btnSelfStarter" class="w-full py-3.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow transition flex items-center justify-center gap-2 cursor-pointer">
+        <span class="text-base">📢</span>
+        <span>啟動自動發令（各就位 ➜ 預備 ➜ 鳴槍）</span>
+      </button>
+
+      <!-- Trigger 3: Audio Mic Acoustic Detection Toggle -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-center justify-between">
+        <div>
+          <span class="text-xs font-semibold text-slate-200 block">🎙️ 槍聲/哨音自動偵測</span>
+          <span id="audioLevelLabel" class="text-[10px] text-slate-400 font-mono">音量: 0%</span>
+        </div>
+        <button id="btnToggleAudioListen" onclick="app.toggleAudioDetection()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition">
+          開啟麥克風
+        </button>
+      </div>
+
+      <!-- Test Gunshot Audio & Zero-Test Buttons for Starter -->
+      <div class="grid grid-cols-2 gap-2">
+        <button onclick="app.playGunshotAudio()" class="py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 font-bold text-xs text-amber-400 flex items-center justify-center gap-1.5 transition">
+          <span>💥</span> 試聽發令音效
+        </button>
+        <button onclick="app.triggerZeroTest()" class="py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 font-bold text-xs text-emerald-400 flex items-center justify-center gap-1.5 transition" title="發送並執行全螢幕白光閃爍歸零驗證">
+          <span>⚡</span> 歸零閃光測試
+        </button>
+      </div>
+
+    </div>
+  </main>
+
+
+  <!-- ================= CSV IMPORT MODAL ================= -->
+  <div id="csvImportModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-4 shadow-2xl flex flex-col gap-3">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="font-bold text-sm text-white">匯入道次檢錄名單 (CSV)</h3>
+        <button onclick="app.closeCsvModal()" class="text-slate-400 hover:text-white font-mono">✕</button>
+      </div>
+      <div class="border-2 border-dashed border-slate-700 rounded-xl p-5 text-center cursor-pointer hover:border-slate-500 transition" onclick="document.getElementById('csvFileInput').click()">
+        <input type="file" id="csvFileInput" accept=".csv" class="hidden" onchange="app.handleCsvFile(event)">
+        <div class="text-3xl mb-1">📁</div>
+        <span class="text-xs text-slate-300 font-medium">點擊選擇 CSV 檔案</span>
+      </div>
+      <div class="flex justify-between items-center pt-2">
+        <button onclick="app.downloadSampleCsv()" class="text-xs text-sky-400 hover:underline">下載範本</button>
+        <button onclick="app.closeCsvModal()" class="px-3 py-1 rounded-lg bg-slate-800 text-xs text-slate-300">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fullscreen Flash Overlay for IAAF Zero-Test -->
+  <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
+
+  <!-- Main Application Script -->
+  <script src="./app.js"></script>
+</body>
+</html>
