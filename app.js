@@ -2309,6 +2309,18 @@ class ProFinishApp {
     const heat = this.heatData[this.currentHeat];
     if (!heat) return;
 
+    // 1. Always update local storage cache immediately so results are never lost
+    try {
+      const cached = JSON.parse(localStorage.getItem('profinish_meet_cache') || 'null');
+      if (cached && Array.isArray(cached.heats)) {
+        const idx = cached.heats.findIndex(h => String(h.uid || h.id) === String(heat.uid || heat.id));
+        if (idx !== -1) {
+          cached.heats[idx] = { ...cached.heats[idx], ...heat };
+        }
+        localStorage.setItem('profinish_meet_cache', JSON.stringify(cached));
+      }
+    } catch (e) {}
+
     let proofImage = customProofDataUrl;
     if (!proofImage && withToast && this.dom.slitCanvas && this.dom.slitCanvas.width > 10) {
       try {
@@ -2316,8 +2328,22 @@ class ProFinishApp {
       } catch (e) {}
     }
 
+    const isStaticHost = location.hostname.endsWith('github.io');
+    const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+    const targetUrl = configuredBackend 
+      ? `${configuredBackend.replace(/\/+$/, '')}/api/heat-result`
+      : '/api/heat-result';
+
+    // If on GitHub Pages and no custom backend IP configured
+    if (isStaticHost && !configuredBackend) {
+      if (withToast) {
+        this.showGitHubSyncModal(heat);
+      }
+      return;
+    }
+
     try {
-      const res = await fetch('/api/heat-result', {
+      const res = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2332,12 +2358,84 @@ class ProFinishApp {
       });
       if (res.ok && withToast) {
         alert(`☁️ 已成功將「第 ${heat.id || this.currentHeat} 組」成績與壓線圖同步回傳至電腦後台！`);
+      } else if (!res.ok && withToast) {
+        if (isStaticHost) {
+          this.showGitHubSyncModal(heat);
+        } else {
+          alert('同步至電腦後台失敗，請確認後台伺服器是否有啟動。');
+        }
       }
     } catch (err) {
       if (withToast) {
-        alert('同步至電腦後台失敗，請確認網路連線。');
+        if (isStaticHost) {
+          this.showGitHubSyncModal(heat);
+        } else {
+          alert('同步至電腦後台失敗，請確認網路連線或伺服器是否開啟。');
+        }
       }
     }
+  }
+
+  showGitHubSyncModal(heat) {
+    const heatId = heat.id || this.currentHeat;
+    let modal = document.getElementById('ghSyncModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ghSyncModal';
+      modal.className = 'fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4';
+      document.body.appendChild(modal);
+    }
+    const currentBackend = localStorage.getItem('profinish_backend_url') || '';
+    modal.innerHTML = `
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-4 shadow-2xl flex flex-col gap-3 text-slate-100 text-xs">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <span class="font-bold text-sm text-emerald-400 flex items-center gap-1.5">
+            <span>✅</span> 本組成績已保存在平板！
+          </span>
+          <button onclick="document.getElementById('ghSyncModal').classList.add('hidden')" class="text-slate-400 hover:text-white text-base">✕</button>
+        </div>
+        <p class="text-[11px] text-slate-300 leading-relaxed">
+          您目前使用的是 <b>GitHub 雲端版</b>。本組（第 ${heatId} 組）成績已完整記錄在平板中，<b>絕不遺失</b>！
+        </p>
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex flex-col gap-2">
+          <span class="text-[10px] text-slate-400 font-semibold">📤 傳遞本組成績至司令台 / 電腦：</span>
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="app.exportResultsCsv()" class="py-2 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-center flex items-center justify-center gap-1">
+              <span>📊</span> 成績單 (CSV)
+            </button>
+            <button onclick="app.exportPhotoFinishProof()" class="py-2 px-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-center flex items-center justify-center gap-1">
+              <span>📸</span> 壓線證明圖
+            </button>
+          </div>
+        </div>
+        <div class="border-t border-slate-800 pt-2 flex flex-col gap-1.5">
+          <span class="text-[10px] text-slate-400">🔗 若操場與司令台同 Wi-Fi，可填寫電腦 IP 自動回傳：</span>
+          <div class="flex gap-1.5">
+            <input type="text" id="inputBackendHostIp" value="${currentBackend}" placeholder="例 http://163.19.131.70:8080" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-[11px] font-mono text-white outline-none">
+            <button onclick="app.saveCustomBackendUrl()" class="px-2.5 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-600 font-bold text-[11px] text-white">儲存</button>
+          </div>
+        </div>
+        <button onclick="document.getElementById('ghSyncModal').classList.add('hidden')" class="w-full py-2 rounded-xl bg-slate-800 hover:bg-slate-700 font-bold text-slate-200 text-xs mt-1">
+          關閉視窗
+        </button>
+      </div>
+    `;
+    modal.classList.remove('hidden');
+  }
+
+  saveCustomBackendUrl() {
+    const input = document.getElementById('inputBackendHostIp');
+    if (!input) return;
+    const val = input.value.trim();
+    if (val) {
+      localStorage.setItem('profinish_backend_url', val);
+      alert('已儲存司令台電腦網址！之後點擊傳回後台將自動同步至該電腦。');
+    } else {
+      localStorage.removeItem('profinish_backend_url');
+      alert('已清除自訂電腦網址。');
+    }
+    const modal = document.getElementById('ghSyncModal');
+    if (modal) modal.classList.add('hidden');
   }
 
   getGradeOrder(title) {
