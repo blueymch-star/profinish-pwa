@@ -2179,10 +2179,12 @@ class ProFinishApp {
   async initBackendSync() {
     await this.fetchBackendMeetData(true);
 
-    if (location.hostname.endsWith('github.io')) return;
+    const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+    if (location.hostname.endsWith('github.io') && !configuredBackend) return;
 
     try {
-      const es = new EventSource('/api/events');
+      const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/events` : '/api/events';
+      const es = new EventSource(targetUrl);
       es.onerror = () => { es.close(); };
       es.onmessage = async (event) => {
         try {
@@ -2205,7 +2207,14 @@ class ProFinishApp {
 
   async fetchBackendMeetData(switchToActive = false) {
     try {
-      let res = await fetch('/api/meet', { cache: 'no-store' }).catch(() => null);
+      const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+      let res = null;
+      if (configuredBackend) {
+        res = await fetch(`${configuredBackend.replace(/\/+$/, '')}/api/meet`, { cache: 'no-store' }).catch(() => null);
+      }
+      if (!res || !res.ok) {
+        res = await fetch('/api/meet', { cache: 'no-store' }).catch(() => null);
+      }
       if (!res || !res.ok) {
         res = await fetch('./meet_data.json', { cache: 'no-store' }).catch(() => null);
       }

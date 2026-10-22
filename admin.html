@@ -71,17 +71,22 @@
 
       <!-- Live Sync Status & Active Heat Indicator -->
       <div class="flex items-center gap-3">
-        <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3.5 py-1.5 rounded-xl">
-          <span id="sseStatusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span id="sseStatusText" class="text-xs font-medium text-slate-300">與終點手機即時連線中</span>
-        </div>
+        <button onclick="adminApp.openBackendConfigModal()" class="flex items-center gap-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 px-3 py-1.5 rounded-xl transition cursor-pointer" title="點擊設定伺服器連線 IP 或重設名冊">
+          <span id="sseStatusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+          <span id="sseStatusText" class="text-xs font-medium text-slate-300">連線設定</span>
+        </button>
 
         <div class="bg-red-950/50 border border-red-800/60 px-3.5 py-1.5 rounded-xl flex items-center gap-2">
           <span class="text-xs text-red-300 font-semibold">📡 場上進行組別：</span>
           <span id="activeHeatBanner" class="text-xs font-mono font-bold text-amber-300">第 1 組</span>
         </div>
 
-        <a href="/index.html" target="_blank" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition flex items-center gap-1.5 border border-slate-700">
+        <button onclick="adminApp.syncFromDcpsOnline()" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/20" title="從 DCPS 運動會線上報名網站同步最新分組道次">
+          <span>🔄</span>
+          <span>同步報名名冊</span>
+        </button>
+
+        <a href="./index.html" target="_blank" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 transition flex items-center gap-1.5 border border-slate-700">
           <span>📱</span>
           <span>開啟計時畫面</span>
         </a>
@@ -647,60 +652,136 @@
       }
 
       async fetchMeetFromServer() {
-        try {
-          const res = await fetch('/api/meet');
-          if (res.ok) {
-            this.meetData = await res.json();
-            if (!this.meetData.heats || this.meetData.heats.length === 0) return;
-            this.ensureHeatUids();
-            if (this.selectedHeatUid) {
-              const sel = this.meetData.heats.find(h => h.uid === this.selectedHeatUid);
-              if (sel) {
-                this.selectedHeatId = sel.id;
-              } else {
-                this.selectedHeatUid = this.meetData.heats[0].uid;
-                this.selectedHeatId = this.meetData.heats[0].id;
+        const isStaticHost = location.hostname.endsWith('github.io');
+        const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+        let loaded = false;
+
+        // 1. 若有設定司令台伺服器網址，優先連線伺服器
+        if (configuredBackend) {
+          try {
+            const res = await fetch(`${configuredBackend.replace(/\/+$/, '')}/api/meet`, { cache: 'no-store' });
+            if (res.ok) {
+              this.meetData = await res.json();
+              if (this.meetData && Array.isArray(this.meetData.heats) && this.meetData.heats.length > 0) {
+                loaded = true;
               }
-            } else if (!this.meetData.heats.find(h => h.id === this.selectedHeatId)) {
-              this.selectedHeatId = this.meetData.activeHeatId || this.meetData.heats[0].id;
-              const cur = this.meetData.heats.find(h => h.id === this.selectedHeatId) || this.meetData.heats[0];
-              this.selectedHeatUid = cur.uid;
             }
+          } catch (e) {
+            console.warn('Configured backend unavailable:', e);
           }
-        } catch (err) {
-          console.error('Failed to load meet data:', err);
+        }
+
+        // 2. 若在同網域有後端 (例如本地 node server.js)，嘗試 /api/meet
+        if (!loaded && !isStaticHost) {
+          try {
+            const res = await fetch('/api/meet', { cache: 'no-store' });
+            if (res.ok) {
+              this.meetData = await res.json();
+              if (this.meetData && Array.isArray(this.meetData.heats) && this.meetData.heats.length > 0) {
+                loaded = true;
+              }
+            }
+          } catch (e) {}
+        }
+
+        // 3. 若伺服器未連上，嘗試載入本機 LocalStorage 快取
+        if (!loaded) {
+          try {
+            const cached = JSON.parse(localStorage.getItem('profinish_meet_cache') || 'null');
+            if (cached && Array.isArray(cached.heats) && cached.heats.length > 0) {
+              this.meetData = cached;
+              loaded = true;
+            }
+          } catch (e) {}
+        }
+
+        // 4. 若仍無資料 (例如首次使用 GitHub Pages)，自動載入內建 48 組靜態名冊 ./meet_data.json
+        if (!loaded || !this.meetData || !Array.isArray(this.meetData.heats) || this.meetData.heats.length === 0) {
+          try {
+            const staticRes = await fetch('./meet_data.json', { cache: 'no-store' });
+            if (staticRes.ok) {
+              this.meetData = await staticRes.json();
+              loaded = true;
+            }
+          } catch (e) {
+            console.error('Failed to load static meet_data.json:', e);
+          }
+        }
+
+        if (this.meetData && Array.isArray(this.meetData.heats) && this.meetData.heats.length > 0) {
+          // 確保寫入本機快取
+          try {
+            localStorage.setItem('profinish_meet_cache', JSON.stringify(this.meetData));
+          } catch (e) {}
+
+          // 依賽程時間排序
+          this.meetData.heats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+          this.ensureHeatUids();
+
+          if (this.selectedHeatUid) {
+            const sel = this.meetData.heats.find(h => h.uid === this.selectedHeatUid);
+            if (sel) {
+              this.selectedHeatId = sel.id;
+            } else {
+              this.selectedHeatUid = this.meetData.heats[0].uid;
+              this.selectedHeatId = this.meetData.heats[0].id;
+            }
+          } else if (!this.meetData.heats.find(h => h.id === this.selectedHeatId)) {
+            this.selectedHeatId = this.meetData.activeHeatId || this.meetData.heats[0].id;
+            const cur = this.meetData.heats.find(h => h.id === this.selectedHeatId) || this.meetData.heats[0];
+            this.selectedHeatUid = cur.uid;
+          }
         }
       }
 
       connectSSE() {
         const dot = document.getElementById('sseStatusDot');
         const txt = document.getElementById('sseStatusText');
-        const es = new EventSource('/api/events');
+        const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+        const isStaticHost = location.hostname.endsWith('github.io');
 
-        es.onopen = () => {
-          dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
-          txt.textContent = '與終點手機即時同步連線中';
-        };
+        if (isStaticHost && !configuredBackend) {
+          if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+          if (txt) txt.textContent = '本機離線模式 (點擊設定IP)';
+          return;
+        }
 
-        es.onmessage = async (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'heat_result_updated') {
-              await this.fetchMeetFromServer();
-              this.renderAll();
-              const badge = document.getElementById('badgeResultAlert');
-              if (badge) badge.classList.remove('hidden');
-            } else if (msg.type === 'meet_updated' || msg.type === 'active_heat_changed') {
-              await this.fetchMeetFromServer();
-              this.renderAll();
-            }
-          } catch (e) {}
-        };
+        const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/events` : '/api/events';
+        try {
+          if (this.eventSource) {
+            this.eventSource.close();
+          }
+          const es = new EventSource(targetUrl);
+          this.eventSource = es;
 
-        es.onerror = () => {
-          dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
-          txt.textContent = '重新連線伺服器中...';
-        };
+          es.onopen = () => {
+            if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse';
+            if (txt) txt.textContent = '與終點手機即時同步連線中';
+          };
+
+          es.onmessage = async (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === 'heat_result_updated') {
+                await this.fetchMeetFromServer();
+                this.renderAll();
+                const badge = document.getElementById('badgeResultAlert');
+                if (badge) badge.classList.remove('hidden');
+              } else if (msg.type === 'meet_updated' || msg.type === 'active_heat_changed') {
+                await this.fetchMeetFromServer();
+                this.renderAll();
+              }
+            } catch (e) {}
+          };
+
+          es.onerror = () => {
+            if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+            if (txt) txt.textContent = '重新連線伺服器中... (點擊設定IP)';
+          };
+        } catch (err) {
+          if (dot) dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+          if (txt) txt.textContent = '離線待命 (點擊設定IP)';
+        }
       }
 
       async saveMeetToServer() {
@@ -712,22 +793,200 @@
         this.meetData.meetTitle = document.getElementById('inputMeetTitle').value || '2026 校園運動會田徑錦標賽';
         this.ensureHeatUids();
 
+        // 永遠儲存到 LocalStorage
         try {
-          await fetch('/api/meet', {
+          localStorage.setItem('profinish_meet_cache', JSON.stringify(this.meetData));
+        } catch (e) {}
+
+        const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+        const isStaticHost = location.hostname.endsWith('github.io');
+        const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/meet` : '/api/meet';
+
+        if (isStaticHost && !configuredBackend) {
+          if (ind) {
+            ind.textContent = '✓ 已儲存於本機 (離線模式)';
+            ind.className = 'text-xs font-mono text-emerald-400';
+          }
+          return;
+        }
+
+        try {
+          const res = await fetch(targetUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(this.meetData)
           });
-          if (ind) {
-            ind.textContent = '✓ 已自動儲存並同步';
-            ind.className = 'text-xs font-mono text-emerald-400';
+          if (res.ok) {
+            if (ind) {
+              ind.textContent = '✓ 已儲存並同步至伺服器';
+              ind.className = 'text-xs font-mono text-emerald-400';
+            }
+          } else {
+            throw new Error(`HTTP ${res.status}`);
           }
         } catch (err) {
           if (ind) {
-            ind.textContent = '⚠️ 儲存失敗';
+            ind.textContent = '✓ 已儲存於本機 (伺服器未連線)';
+            ind.className = 'text-xs font-mono text-sky-400';
+          }
+        }
+      }
+
+      async syncFromDcpsOnline() {
+        if (!confirm('是否要從「大成國小線上報名系統」同步最新道次名冊？\n這將會更新所有組別的選手與道次資料。')) return;
+
+        const apiUrl = 'https://script.google.com/macros/s/AKfycby5Q_Ctrhlaefx7lgnPyiSUcIcCyV-uVCLL_h87ZEnhyc8QdkVaqK-QTKUgKgbwBKh7/exec?action=getSeeding';
+        const ind = document.getElementById('saveIndicator');
+        if (ind) {
+          ind.textContent = '🔄 從報名系統同步中...';
+          ind.className = 'text-xs font-mono text-indigo-400';
+        }
+
+        try {
+          const res = await fetch(apiUrl);
+          const json = await res.json();
+          if (!json || json.status !== 'success' || !Array.isArray(json.data) || json.data.length === 0) {
+            throw new Error('未取得有效的分組名冊資料');
+          }
+
+          // 240 筆選手道次資料：依 event + heat 歸類
+          const grouped = {};
+          json.data.forEach(item => {
+            const key = `${item.event}_${item.heat}`;
+            if (!grouped[key]) {
+              grouped[key] = {
+                eventTitle: item.event,
+                heatName: item.heat,
+                lanes: {}
+              };
+            }
+            const laneNum = parseInt(String(item.lane).replace(/\D/g, ''), 10);
+            if (laneNum >= 1 && laneNum <= 6) {
+              grouped[key].lanes[laneNum] = item;
+            }
+          });
+
+          // 更新至目前各組名冊
+          let updatedCount = 0;
+          this.meetData.heats.forEach(h => {
+            const roundClean = (h.roundName || '').replace(/預賽\s*/, '').trim();
+            const key1 = `${h.eventTitle}_${roundClean}`;
+            const key2 = `${h.eventTitle}_第 ${h.id} 組`;
+            const matched = grouped[key1] || grouped[key2];
+
+            if (matched) {
+              updatedCount++;
+              for (let l = 1; l <= 6; l++) {
+                let laneObj = h.lanes.find(lane => lane.lane === l);
+                if (!laneObj) {
+                  laneObj = { lane: l, grade: '', name: '', bib: '', rawTime: null, officialTime: null, rank: '-', status: 'OK' };
+                  h.lanes.push(laneObj);
+                }
+                const rec = matched.lanes[l];
+                if (rec) {
+                  laneObj.name = rec.name || '';
+                  laneObj.grade = rec.className || '';
+                  laneObj.bib = rec.studentNo ? String(rec.studentNo) : '';
+                  laneObj.seat = rec.studentNo || null;
+                  laneObj.refTime = rec.seedScore || null;
+                } else {
+                  laneObj.name = '';
+                  laneObj.grade = '';
+                  laneObj.bib = '';
+                  laneObj.seat = null;
+                }
+              }
+              h.lanes.sort((a, b) => a.lane - b.lane);
+            }
+          });
+
+          await this.saveMeetToServer();
+          this.renderAll();
+          alert(`🎉 成功同步！已從 DCPS 線上報名系統更新 ${updatedCount} 組出賽道次！`);
+        } catch (err) {
+          alert('同步失敗：' + err.message);
+          if (ind) {
+            ind.textContent = '⚠️ 同步失敗';
             ind.className = 'text-xs font-mono text-red-400';
           }
         }
+      }
+
+      async resetToDefaultMeetData() {
+        if (!confirm('⚠️ 確定要將所有組別資料重設為預設的 48 組名單嗎？\n現有的自訂修改與本機暫存將被覆蓋。')) return;
+        try {
+          const res = await fetch('./meet_data.json', { cache: 'no-store' });
+          if (res.ok) {
+            this.meetData = await res.json();
+            this.ensureHeatUids();
+            await this.saveMeetToServer();
+            this.renderAll();
+            alert('✓ 已成功重設回內建 48 組分組名單！');
+          }
+        } catch (e) {
+          alert('重設失敗：' + e.message);
+        }
+      }
+
+      openBackendConfigModal() {
+        let modal = document.getElementById('backendConfigModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'backendConfigModal';
+          modal.className = 'fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4';
+          document.body.appendChild(modal);
+        }
+        const currentBackend = localStorage.getItem('profinish_backend_url') || '';
+        modal.innerHTML = `
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-5 shadow-2xl flex flex-col gap-3.5 text-slate-100 text-xs">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <span class="font-bold text-sm text-amber-300 flex items-center gap-1.5">
+                <span>⚙️</span> 電腦伺服器連線設定
+              </span>
+              <button onclick="document.getElementById('backendConfigModal').classList.add('hidden')" class="text-slate-400 hover:text-white text-base">✕</button>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed">
+              若終點手機與司令台在同一區域網路（或使用 Cloudflare Tunnel），可在此設定伺服器網址，讓後台與手機<b>毫秒級自動即時同步</b>。
+            </p>
+            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-2">
+              <label class="text-[11px] text-slate-400 font-semibold">司令台伺服器網址 (留空表示純離線模式)：</label>
+              <input type="text" id="inputModalBackendUrl" value="${currentBackend}" placeholder="例：http://192.168.1.100:8080 或 https://xxx.trycloudflare.com" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-amber-400" />
+            </div>
+            <div class="flex items-center justify-between gap-2 pt-2">
+              <button onclick="adminApp.resetToDefaultMeetData()" class="text-red-400 hover:text-red-300 underline text-[11px]">
+                重設回預設名冊
+              </button>
+              <div class="flex gap-2">
+                <button onclick="document.getElementById('backendConfigModal').classList.add('hidden')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs">
+                  取消
+                </button>
+                <button onclick="adminApp.saveBackendConfig()" class="px-4 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs">
+                  儲存連線
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+        modal.classList.remove('hidden');
+      }
+
+      saveBackendConfig() {
+        const input = document.getElementById('inputModalBackendUrl');
+        if (!input) return;
+        const val = input.value.trim();
+        if (val) {
+          localStorage.setItem('profinish_backend_url', val);
+          alert('✓ 已儲存伺服器網址！系統將開始連線即時同步。');
+        } else {
+          localStorage.removeItem('profinish_backend_url');
+          alert('✓ 已切換為本機離線模式。');
+        }
+        const modal = document.getElementById('backendConfigModal');
+        if (modal) modal.classList.add('hidden');
+        this.fetchMeetFromServer().then(() => {
+          this.connectSSE();
+          this.renderAll();
+        });
       }
 
       getSelectedHeat() {
@@ -1377,22 +1636,34 @@
       async dispatchSelectedHeatToMobile() {
         const heat = this.getSelectedHeat();
         if (!heat) return;
+        this.meetData.activeHeatId = heat.id;
+        this.meetData.activeHeatUid = heat.uid;
         await this.saveMeetToServer();
+        this.renderAll();
+
+        const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+        const isStaticHost = location.hostname.endsWith('github.io');
+        const dTag = heat.raceDate ? ` · 📅${heat.raceDate}` : '';
+
+        if (isStaticHost && !configuredBackend) {
+          alert(`📡 已成功將「第 ${heat.id} 組 · ${heat.eventTitle} (${heat.roundName || ''}${dTag})」設為進行中組別！\n本機與計時畫面已同步切換為本組 1～6 道。`);
+          return;
+        }
+
+        const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/active-heat` : '/api/active-heat';
         try {
-          const res = await fetch('/api/active-heat', {
+          const res = await fetch(targetUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ heatId: heat.id, uid: heat.uid, raceDate: heat.raceDate })
           });
           if (res.ok) {
-            this.meetData.activeHeatId = heat.id;
-            this.meetData.activeHeatUid = heat.uid;
-            this.renderAll();
-            const dTag = heat.raceDate ? ` · 📅${heat.raceDate}` : '';
             alert(`📡 已成功將「第 ${heat.id} 組 · ${heat.eventTitle} (${heat.roundName || ''}${dTag})」派送至終點手機！\n手機端已自動切換為本組 1～6 道出賽名單。`);
+          } else {
+            alert(`已更新進行組別（伺服器回應狀態 ${res.status}）`);
           }
         } catch (err) {
-          alert('派送失敗：' + err.message);
+          alert(`已更新進行組別（本機生效，未連線伺服器：${err.message}）`);
         }
       }
 
@@ -2352,6 +2623,7 @@
     }
 
     const adminApp = new ProFinishAdmin();
+    window.adminApp = adminApp;
   </script>
 </body>
 </html>
