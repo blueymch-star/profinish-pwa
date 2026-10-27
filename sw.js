@@ -1,5 +1,5 @@
 // Service Worker for ProFinish PWA
-const CACHE_NAME = 'profinish-v4.6';
+const CACHE_NAME = 'profinish-v4.7';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',

@@ -82,6 +82,10 @@ class ProFinishApp {
     // Start Live Clock Ticker
     this.startClockTicker();
 
+    // Initialize Slit-Scan Canvas Dimensions & Capture Loop immediately
+    this.initSlitCanvasDimensions();
+    this.startSlitScanLoop();
+
     // Initialize Camera for Finish Host
     this.initCamera();
 
@@ -197,13 +201,22 @@ class ProFinishApp {
       if (this.dom.scrubberCursor) {
         this.dom.scrubberCursor.classList.remove('hidden');
       }
-      // Ensure canvas dimensions and grid are initialized
+      // Ensure canvas dimensions and grid are initialized without wiping recorded slices
       this.initSlitCanvasDimensions();
       this.applyCanvasZoom();
-      // Set initial cursor position if not yet set
-      if (this.currentCursorTimeSec === 0) {
-        this.updateCursorPosition(150, true);
+
+      // Position cursor on recorded slices (or default 150px) and scroll into view
+      let targetX = this.currentCursorPixelX;
+      if (this.sliceIndex.length > 0 && (targetX <= 0 || targetX > this.slitCurrentX)) {
+        const midIdx = Math.floor(this.sliceIndex.length * 0.5);
+        targetX = this.sliceIndex[midIdx] ? this.sliceIndex[midIdx].x : Math.max(80, Math.floor(this.slitCurrentX * 0.5));
+      } else if (targetX <= 0) {
+        targetX = 150;
       }
+      this.updateCursorPosition(targetX, true);
+      requestAnimationFrame(() => {
+        this.updateCursorPosition(this.currentCursorPixelX || targetX, true);
+      });
     }
   }
 
@@ -336,6 +349,9 @@ class ProFinishApp {
     try {
       this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
       this.dom.cameraVideo.srcObject = this.cameraStream;
+      this.dom.cameraVideo.onloadedmetadata = () => {
+        this.initSlitCanvasDimensions();
+      };
       await this.dom.cameraVideo.play();
 
       // Read track capabilities (e.g. zoom, fps)
@@ -345,17 +361,17 @@ class ProFinishApp {
         this.dom.camFpsBadge.textContent = `${Math.round(settings.frameRate)} FPS`;
       }
 
-      // Initialize Canvas dimensions matching video stream
-      this.dom.cameraVideo.onloadedmetadata = () => {
-        this.initSlitCanvasDimensions();
-      };
+      // Immediately initialize canvas dimensions now that video is playing
+      this.initSlitCanvasDimensions();
 
-      // Start the Slit-Scan Video Capture Loop
+      // Ensure Slit-Scan Video Capture Loop is running
       this.startSlitScanLoop();
     } catch (err) {
       console.error('Camera stream access failed:', err);
       this.dom.camLensBadge.textContent = '相機未授權';
       this.dom.camLensBadge.classList.add('text-red-400');
+      this.initSlitCanvasDimensions();
+      this.startSlitScanLoop();
     }
   }
 
@@ -373,7 +389,7 @@ class ProFinishApp {
       await track.applyConstraints({ advanced: [{ torch: this.torchEnabled }] });
       this.dom.btnTorch.classList.toggle('bg-amber-600', this.torchEnabled);
     } else {
-      alert('您的裝置或相機鏡頭不支援補光燈控制');
+      this.showToast('您的裝置或相機鏡頭不支援補光燈控制', 'warn');
     }
   }
 
@@ -387,31 +403,79 @@ class ProFinishApp {
     const video = this.dom.cameraVideo;
     const h = (video && video.videoHeight) || 720;
     const canvas = this.dom.slitCanvas;
-    if (canvas) {
-      if (canvas.height !== h || canvas.width < 1200) {
+    if (!canvas) return;
+
+    const targetWidth = Math.max(1600, window.innerWidth * 3);
+    const hasRecordedSlices = (this.sliceIndex && this.sliceIndex.length > 0) || (this.slitCurrentX > 0);
+
+    if (canvas.height !== h || canvas.width < 1200) {
+      if (hasRecordedSlices && canvas.width > 0 && canvas.height > 0) {
+        // Preserve already recorded race imagery when adjusting canvas buffer size
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
+
         canvas.height = h;
-        canvas.width = Math.max(1600, window.innerWidth * 3);
-        if (this.sliceIndex.length === 0) {
-          this.drawDemoCanvasGrid();
-        }
+        canvas.width = Math.max(canvas.width, targetWidth);
+        this.drawDemoCanvasGrid();
+        canvas.getContext('2d').drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
+        this.drawLaneBadgesOverlay();
+      } else {
+        canvas.height = h;
+        canvas.width = targetWidth;
+        this.drawDemoCanvasGrid();
       }
+    } else if (!hasRecordedSlices) {
+      this.drawDemoCanvasGrid();
     }
+  }
+
+  drawLaneBadgesOverlay() {
+    const canvas = this.dom.slitCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const laneHeight = canvas.height / 6;
+    const laneColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
+    const laneNames = ['第 6 道 (綠) ⬆頂', '第 5 道 (橘)', '第 4 道 (紫)', '第 3 道 (黃)', '第 2 道 (藍)', '第 1 道 (紅) ⬇底'];
+    const heat = this.heatData[this.currentHeat];
+
+    ctx.save();
+    for (let i = 1; i <= 6; i++) {
+      const y = i * laneHeight;
+      const laneNum = 7 - i; // Row 1 (top) = 6道, Row 6 (bottom) = 1道
+      const centerY = y - laneHeight / 2;
+      const laneInfo = heat && heat.lanes ? heat.lanes.find(l => l.lane === laneNum) : null;
+      const runnerText = (laneInfo && (laneInfo.grade || laneInfo.name)) ? ` · ${laneInfo.grade || ''} ${laneInfo.name || ''}`.trim() : '';
+      const fullLabel = `${laneNames[i - 1]}${runnerText}`;
+
+      ctx.font = 'bold 11px sans-serif';
+      const badgeW = Math.max(96, Math.ceil(ctx.measureText(fullLabel).width) + 14);
+      ctx.fillStyle = laneColors[i - 1];
+      ctx.fillRect(8, centerY - 10, badgeW, 20);
+
+      ctx.fillStyle = (laneNum === 3) ? '#000000' : '#ffffff';
+      ctx.fillText(fullLabel, 13, centerY + 4);
+    }
+    ctx.restore();
   }
 
   drawDemoCanvasGrid() {
     const canvas = this.dom.slitCanvas;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#090d16';
+    ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw horizontal dashed lane guides (6 Lanes)
+    // Draw alternating subtle lane bands and horizontal dashed lane guides (6 Lanes)
     // 螢幕最下方為第 1 道依序往上至第 6 道 (最下方 = 第 1 道, 最上方 = 第 6 道)
     const laneHeight = canvas.height / 6;
-    const laneColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
-    const laneNames = ['第 6 道 (綠) ⬆頂', '第 5 道 (橘)', '第 4 道 (紫)', '第 3 道 (黃)', '第 2 道 (藍)', '第 1 道 (紅) ⬇底'];
-    const heat = this.heatData[this.currentHeat];
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    for (let i = 0; i < 6; i++) {
+      ctx.fillStyle = (i % 2 === 0) ? 'rgba(30, 41, 59, 0.55)' : 'rgba(15, 23, 42, 0.55)';
+      ctx.fillRect(0, i * laneHeight, canvas.width, laneHeight);
+    }
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
     ctx.lineWidth = 1;
     for (let i = 1; i <= 6; i++) {
       const y = i * laneHeight;
@@ -420,48 +484,40 @@ class ProFinishApp {
       ctx.moveTo(0, y);
       ctx.lineTo(canvas.width, y);
       ctx.stroke();
-
-      const laneNum = 7 - i; // Row 1 (top) = 6道, Row 6 (bottom) = 1道
-      const centerY = y - laneHeight / 2;
-      const laneInfo = heat && heat.lanes ? heat.lanes.find(l => l.lane === laneNum) : null;
-      const runnerText = (laneInfo && (laneInfo.grade || laneInfo.name)) ? ` · ${laneInfo.grade || ''} ${laneInfo.name || ''}`.trim() : '';
-      const fullLabel = `${laneNames[i - 1]}${runnerText}`;
-
-      // Color indicator badge for lane
-      ctx.font = 'bold 10px sans-serif';
-      const badgeW = Math.max(92, Math.ceil(ctx.measureText(fullLabel).width) + 12);
-      ctx.fillStyle = laneColors[i - 1];
-      ctx.fillRect(8, centerY - 9, badgeW, 18);
-
-      ctx.fillStyle = (laneNum === 3) ? '#000000' : '#ffffff';
-      ctx.fillText(fullLabel, 12, centerY + 4);
     }
     ctx.setLineDash([]);
 
     // Draw time ticks at the top
     for (let x = 0; x < canvas.width; x += 100) {
       const sec = (x / 100).toFixed(1);
-      ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)';
+      ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, 15);
+      ctx.lineTo(x, 16);
       ctx.stroke();
 
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
       ctx.font = '10px monospace';
-      ctx.fillText(`${sec}s`, x + 3, 22);
+      ctx.fillText(`${sec}s`, x + 3, 24);
     }
+
+    this.drawLaneBadgesOverlay();
   }
 
   startSlitScanLoop() {
-    const video = this.dom.cameraVideo;
-    const canvas = this.dom.slitCanvas;
-    this.slitCurrentX = 0;
+    if (this._slitLoopRunning) return;
+    this._slitLoopRunning = true;
+    if (typeof this.slitCurrentX !== 'number') {
+      this.slitCurrentX = 0;
+    }
 
-    const onFrame = (now, metadata) => {
+    const onFrame = () => {
+      const video = this.dom.cameraVideo;
+      const canvas = this.dom.slitCanvas;
+
       // Check if race is running and slit scanning is active
-      if (this.raceState === 'running' && video.readyState >= 2) {
+      if (this.raceState === 'running' && canvas) {
         const elapsedSec = (performance.now() - this.raceStartTime) / 1000;
 
         // Check if auto delay seconds have passed
@@ -469,18 +525,25 @@ class ProFinishApp {
           const ctx = canvas.getContext('2d');
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
-          const vw = video.videoWidth;
-          const vh = video.videoHeight;
+          const hasLiveVideo = Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
+          const vw = hasLiveVideo ? video.videoWidth : 1280;
+          const vh = hasLiveVideo ? video.videoHeight : (canvas.height || 720);
 
           if (canvas.height !== vh) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
             canvas.height = vh;
+            this.drawDemoCanvasGrid();
+            ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
           }
 
           // Calculate slit source column
           const sliceW = this.sliceWidth;
-          const sourceX = Math.floor(vw * this.slitXRatio) - Math.floor(sliceW / 2);
+          const sourceX = Math.max(0, Math.floor(vw * this.slitXRatio) - Math.floor(sliceW / 2));
 
-          // If canvas buffer runs out of width, extend width dynamically
+          // If canvas buffer runs out of width, extend width dynamically while preserving image
           if (this.slitCurrentX + sliceW >= canvas.width) {
             const oldWidth = canvas.width;
             const newWidth = oldWidth + 1200;
@@ -491,15 +554,47 @@ class ProFinishApp {
 
             canvas.width = newWidth;
             canvas.style.width = `${Math.round(newWidth * this.canvasZoom)}px`;
+            this.drawDemoCanvasGrid();
             ctx.drawImage(tempCanvas, 0, 0);
           }
 
-          // Render vertical slit slice to canvas
-          ctx.drawImage(
-            video,
-            sourceX, 0, sliceW, vh,
-            this.slitCurrentX, 0, sliceW, canvas.height
-          );
+          if (hasLiveVideo) {
+            // Render vertical slit slice from live camera to canvas
+            ctx.drawImage(
+              video,
+              sourceX, 0, sliceW, vh,
+              this.slitCurrentX, 0, sliceW, canvas.height
+            );
+          } else {
+            // Fallback synthetic track slice when testing without camera hardware
+            const laneH = canvas.height / 6;
+            const vestColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
+            for (let i = 0; i < 6; i++) {
+              ctx.fillStyle = (i % 2 === 0) ? '#1e293b' : '#0f172a';
+              ctx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
+              // Draw lane divider dot
+              if (this.slitCurrentX % 8 < sliceW) {
+                ctx.fillStyle = 'rgba(255,255,255,0.22)';
+                ctx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
+              }
+              // Draw simulated runner torso crossing around 1.2s ~ 3.2s for camera-less testing
+              const targetCrossSec = 1.2 + i * 0.32;
+              if (Math.abs(elapsedSec - targetCrossSec) < 0.08) {
+                const centerY = (i + 0.5) * laneH;
+                ctx.fillStyle = vestColors[i];
+                ctx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
+              }
+            }
+          }
+
+          // Subtle lane guide ticks on top of slice
+          const laneH = canvas.height / 6;
+          if (this.slitCurrentX % 12 < sliceW) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+            for (let i = 1; i < 6; i++) {
+              ctx.fillRect(this.slitCurrentX, Math.round(i * laneH), sliceW, 1);
+            }
+          }
 
           // Record timestamp metadata
           this.sliceIndex.push({
@@ -507,40 +602,40 @@ class ProFinishApp {
             timeSec: elapsedSec
           });
 
-          // Draw a small time marker every full second at the top of the canvas
+          // Draw a time marker every 0.5s / 1.0s at the top of the canvas
           const prevSlice = this.sliceIndex[this.sliceIndex.length - 2];
-          if (prevSlice && Math.floor(elapsedSec) > Math.floor(prevSlice.timeSec)) {
-            const sec = Math.floor(elapsedSec);
-            ctx.fillStyle = 'rgba(239, 68, 68, 0.9)';
-            ctx.fillRect(this.slitCurrentX, 0, 1.5, 24);
+          if (prevSlice && Math.floor(elapsedSec * 2) > Math.floor(prevSlice.timeSec * 2)) {
+            const halfSec = (Math.floor(elapsedSec * 2) / 2).toFixed(1);
+            const isFullSec = halfSec.endsWith('.0');
+            ctx.fillStyle = isFullSec ? 'rgba(239, 68, 68, 0.95)' : 'rgba(250, 204, 21, 0.75)';
+            ctx.fillRect(this.slitCurrentX, 0, 1.5, isFullSec ? 24 : 14);
             ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 12px monospace';
-            ctx.fillText(`${sec}s`, this.slitCurrentX + 3, 16);
+            ctx.font = isFullSec ? 'bold 12px monospace' : '10px monospace';
+            ctx.fillText(`${halfSec}s`, this.slitCurrentX + 3, isFullSec ? 16 : 12);
           }
 
           this.slitCurrentX += sliceW;
-          this.dom.canvasEmptyPrompt.classList.add('hidden');
+          if (this.dom.canvasEmptyPrompt) {
+            this.dom.canvasEmptyPrompt.classList.add('hidden');
+          }
 
-          // Auto-scroll the viewport to the right edge during active recording
+          // Auto-scroll the viewport following the active write head (not the blank right end!)
           if (this.dom.canvasViewport) {
-            this.dom.canvasViewport.scrollLeft = canvas.width;
+            const vp = this.dom.canvasViewport;
+            const headCssX = this.slitCurrentX * this.canvasZoom;
+            if (headCssX > vp.clientWidth * 0.75) {
+              vp.scrollLeft = Math.max(0, headCssX - vp.clientWidth * 0.75);
+            } else {
+              vp.scrollLeft = 0;
+            }
           }
         }
       }
 
-      // Chain next frame using requestVideoFrameCallback (iOS Safari Native) or fallback
-      if ('requestVideoFrameCallback' in video) {
-        video.requestVideoFrameCallback(onFrame);
-      } else {
-        requestAnimationFrame((time) => onFrame(time, {}));
-      }
+      requestAnimationFrame(onFrame);
     };
 
-    if ('requestVideoFrameCallback' in video) {
-      video.requestVideoFrameCallback(onFrame);
-    } else {
-      requestAnimationFrame((time) => onFrame(time, {}));
-    }
+    requestAnimationFrame(onFrame);
   }
 
   /* ========================================================================== */
@@ -616,17 +711,26 @@ class ProFinishApp {
       console.log(`[SoundComp] Single-phone acoustic delay deducted: ${deductSec.toFixed(3)}s`);
     }
 
-    this.raceStartTime = effectiveStartTime;
-    this.raceState = 'running';
+    // Ensure camera video is playing (in case iOS Safari paused it during background/audio)
+    if (this.dom.cameraVideo && this.dom.cameraVideo.paused && this.cameraStream) {
+      this.dom.cameraVideo.play().catch(() => {});
+    }
+
     this.sliceIndex = []; // Clear current heat slices
     this.slitCurrentX = 0; // Reset canvas slice write head
-    
-    // Clear canvas
-    const canvas = this.dom.slitCanvas;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#090d16';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    this.dom.canvasEmptyPrompt.classList.add('hidden');
+
+    // Initialize canvas dimensions and draw 6-lane background grid before race starts
+    this.initSlitCanvasDimensions();
+    this.drawDemoCanvasGrid();
+    if (this.dom.canvasViewport) {
+      this.dom.canvasViewport.scrollLeft = 0;
+    }
+    if (this.dom.canvasEmptyPrompt) {
+      this.dom.canvasEmptyPrompt.classList.add('hidden');
+    }
+
+    this.raceStartTime = effectiveStartTime;
+    this.raceState = 'running';
 
     if (this.dom.scanStatusBadge) {
       this.dom.scanStatusBadge.textContent = "⚡ 高速掃描寫入中...";
@@ -667,6 +771,16 @@ class ProFinishApp {
     if (this.dom.scanStatusBadge) {
       this.dom.scanStatusBadge.textContent = "比賽已結束 · 準備判讀";
       this.dom.scanStatusBadge.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800";
+    }
+
+    // Overlay lane identification badges on left edge so judge can clearly read lanes 1~6
+    this.drawLaneBadgesOverlay();
+
+    // Position cursor on the recorded region
+    if (this.sliceIndex.length > 0) {
+      const midIdx = Math.floor(this.sliceIndex.length * 0.5);
+      const targetX = this.sliceIndex[midIdx] ? this.sliceIndex[midIdx].x : Math.max(80, Math.floor(this.slitCurrentX * 0.5));
+      this.updateCursorPosition(targetX, true);
     }
 
     this.updateTriggerButtonState();
@@ -728,6 +842,10 @@ class ProFinishApp {
     if (this.dom.scanStatusBadge) {
       this.dom.scanStatusBadge.textContent = "等待起跑訊號";
       this.dom.scanStatusBadge.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400";
+    }
+    this.drawDemoCanvasGrid();
+    if (this.dom.canvasViewport) {
+      this.dom.canvasViewport.scrollLeft = 0;
     }
     this.dom.canvasEmptyPrompt.classList.remove('hidden');
     this.dom.scrubberCursor.classList.remove('hidden');

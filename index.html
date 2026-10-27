@@ -396,8 +396,8 @@
       </div>
 
       <!-- Interactive Slit-Scan Canvas Viewport -->
-      <div id="canvasViewport" class="flex-1 relative overflow-auto bg-black cursor-crosshair select-none min-h-[200px]" style="touch-action: none;">
-        <canvas id="slitCanvas" class="h-full block" style="image-rendering: auto;"></canvas>
+      <div id="canvasViewport" class="flex-1 relative overflow-auto bg-slate-950 cursor-crosshair select-none min-h-[200px]" style="touch-action: none;">
+        <canvas id="slitCanvas" width="1600" height="720" class="h-full block" style="image-rendering: auto;"></canvas>
 
         <!-- Vertical Scrubber Cursor Line (Yellow Crosshair Reticle) -->
         <div id="scrubberCursor" class="absolute top-0 bottom-0 w-0.5 bg-yellow-400 pointer-events-none z-20" style="left: 120px; box-shadow: 0 0 10px rgba(250, 204, 21, 0.9);">
@@ -414,12 +414,12 @@
         </div>
 
         <!-- Empty state placeholder -->
-        <div id="canvasEmptyPrompt" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-2 p-4 text-center">
-          <div class="w-12 h-12 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-xl">
+        <div id="canvasEmptyPrompt" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-2 p-4 text-center pointer-events-none">
+          <div class="w-12 h-12 rounded-full bg-slate-900/80 border border-slate-800 flex items-center justify-center text-xl">
             ⏱️
           </div>
-          <p class="text-xs font-medium text-slate-400">尚未記錄到選手終點影像</p>
-          <p class="text-[11px] text-slate-600 max-w-sm">起跑後系統會自動高速掃描終點線，完成後可在此滑動游標判讀</p>
+          <p class="text-xs font-medium text-slate-300 bg-slate-950/75 px-3 py-1 rounded-full">尚未記錄到選手終點影像（可滑動游標預覽）</p>
+          <p class="text-[11px] text-slate-400 max-w-sm bg-slate-950/60 px-2.5 py-0.5 rounded">起跑後系統會自動高速掃描終點線，完成後可在此滑動游標判讀</p>
         </div>
       </div>
 
@@ -618,6 +618,6 @@
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js"></script>
+  <script src="./app.js?v=4.7"></script>
 </body>
 </html>
