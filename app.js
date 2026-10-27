@@ -27,6 +27,7 @@ class ProFinishApp {
     // Slit-scan camera configuration
     this.slitXRatio = 0.5; // Default 50% (screen center)
     this.sliceWidth = 2; // px per slice (fine, crisp temporal resolution)
+    this.cameraFps = parseInt(localStorage.getItem('profinish_cam_fps') || '120', 10);
     this.autoDelaySeconds = 0; // Delay before starting slice writes
     this.canvasZoom = 1.0;
     this.currentCursorPixelX = 0;
@@ -85,6 +86,9 @@ class ProFinishApp {
 
   init() {
     this.cacheDom();
+    if (this.dom.selectCamFps) {
+      this.dom.selectCamFps.value = String(this.cameraFps || 120);
+    }
     this.initDefaultHeatData(this.currentHeat);
     this.setDistance(this.currentDistance);
     this.renderLanesTable();
@@ -186,6 +190,7 @@ class ProFinishApp {
       checkSoundComp: document.getElementById('checkSoundComp'),
       inputTemperature: document.getElementById('inputTemperature'),
       selectSlitWidth: document.getElementById('selectSlitWidth'),
+      selectCamFps: document.getElementById('selectCamFps'),
       inputAutoDelay: document.getElementById('inputAutoDelay'),
       camFpsBadge: document.getElementById('camFpsBadge'),
       camLensBadge: document.getElementById('camLensBadge'),
@@ -356,13 +361,14 @@ class ProFinishApp {
       this.cameraStream = null;
     }
 
+    const targetFps = this.cameraFps || 120;
     const constraints = {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         facingMode: deviceId ? undefined : { ideal: 'environment' },
         width: { ideal: 1920, min: 1280 },
         height: { ideal: 1080, min: 720 },
-        frameRate: { ideal: 60, min: 30 }
+        frameRate: { ideal: targetFps, max: targetFps, min: 30 }
       },
       audio: false
     };
@@ -379,8 +385,9 @@ class ProFinishApp {
       const track = this.cameraStream.getVideoTracks()[0];
       if (track) {
         const settings = track.getSettings ? track.getSettings() : {};
-        if (settings.frameRate && this.dom.camFpsBadge) {
-          this.dom.camFpsBadge.textContent = `${Math.round(settings.frameRate)} FPS`;
+        const reportedFps = settings.frameRate ? Math.round(settings.frameRate) : targetFps;
+        if (this.dom.camFpsBadge) {
+          this.dom.camFpsBadge.textContent = `${reportedFps} FPS`;
         }
         track.onended = () => {
           console.warn('[Camera] Video track ended unexpectedly, scheduling auto-restart...');
@@ -736,10 +743,18 @@ class ProFinishApp {
         }
       }
 
-      requestAnimationFrame(onFrame);
+      if (hasLiveVideo && typeof video.requestVideoFrameCallback === 'function' && !video.paused) {
+        video.requestVideoFrameCallback(onFrame);
+      } else {
+        requestAnimationFrame(onFrame);
+      }
     };
 
-    requestAnimationFrame(onFrame);
+    if (this.dom.cameraVideo && typeof this.dom.cameraVideo.requestVideoFrameCallback === 'function' && !this.dom.cameraVideo.paused) {
+      this.dom.cameraVideo.requestVideoFrameCallback(onFrame);
+    } else {
+      requestAnimationFrame(onFrame);
+    }
   }
 
   /* ========================================================================== */
@@ -2690,6 +2705,15 @@ class ProFinishApp {
 
   setSlitWidth(val) {
     this.sliceWidth = parseInt(val, 10);
+  }
+
+  setCameraFps(val) {
+    this.cameraFps = parseInt(val, 10) || 120;
+    localStorage.setItem('profinish_cam_fps', String(this.cameraFps));
+    if (this.role === 'finish') {
+      this.startCameraStream(this.selectedCameraId);
+    }
+    this.showToast(`📷 拍攝幀率目標已設為 ${this.cameraFps} FPS`, 'info');
   }
 
   setAutoDelay(val) {

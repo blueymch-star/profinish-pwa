@@ -134,7 +134,7 @@
       <!-- Camera Info Badge (Top Left overlay) -->
       <div class="absolute left-3 flex flex-col gap-1 pointer-events-none z-10 opacity-70" style="top: max(calc(env(safe-area-inset-top, 0px) + 52px), 56px);">
         <span id="camFpsBadge" class="bg-black/60 backdrop-blur text-[10px] font-mono text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20">
-          30 FPS
+          120 FPS
         </span>
         <span id="camLensBadge" class="bg-black/60 backdrop-blur text-[10px] font-mono text-slate-300 px-1.5 py-0.5 rounded border border-slate-700/40">
           主鏡頭 1x
@@ -276,6 +276,15 @@
               💡
             </button>
           </div>
+        </div>
+
+        <div>
+          <span class="text-slate-400 text-[11px] block mb-1">拍攝幀率 (Frame Rate)：</span>
+          <select id="selectCamFps" onchange="app.setCameraFps(this.value)" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-1.5 text-slate-200">
+            <option value="120" selected>⚡ 120 FPS (最高精度 8.3ms · 預設推薦)</option>
+            <option value="60">60 FPS (標準流暢 16.7ms)</option>
+            <option value="30">30 FPS (省電模式 33.3ms)</option>
+          </select>
         </div>
 
         <div>
@@ -621,6 +630,6 @@
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js?v=5.0"></script>
+  <script src="./app.js?v=5.1"></script>
 </body>
 </html>
