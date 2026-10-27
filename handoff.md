@@ -1,20 +1,23 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-27 22:05  
+**更新時間**：2026-10-27 22:29  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.1)
+## 📋 本次完成事項 (v5.2)
 
-1. **升級預設採用 120 FPS 高速拍攝與精準幀回調**：
-   - 相機 MediaStream 請求改為 `frameRate: { ideal: 120, max: 120, min: 30 }`，大幅將時間解析度從 16.7ms 提升至 8.3ms。
-   - 狹縫取樣循環實裝原生 `video.requestVideoFrameCallback`（支援 iOS Safari 15.4+ / Android Chrome 83+），即使螢幕刷新率為 60Hz 也能保證接收到硬體解碼的每一幀 120 FPS 影像切片。
-   - 於設定選單新增「拍攝幀率切換 (120 FPS / 60 FPS / 30 FPS)」，設定即時存入 `localStorage`，左上角 HUD 即時顯示硬體實際運作幀率。
+1. **修復終點判讀沒有出現拍攝畫面問題 (`v5.1` 迴歸修復)**：
+   - **問題根因**：
+     1. `v5.1` 在 `startSlitScanLoop()` 內將 `const hasLiveVideo` 宣告在 `if (this.raceState === 'running')` 區塊內部，卻在區塊外部結尾處讀取 `if (hasLiveVideo && ...)`，導致網頁載入（`raceState === 'idle'`）執行第一幀時拋出 `ReferenceError: hasLiveVideo is not defined`，使狹縫掃描迴圈在啟動瞬間中斷！
+     2. `startCameraStream()` 對 `getUserMedia` 傳入硬性 `max: targetFps, min: 30` 參數，在部分不支援強制幀率上下限的行動裝置鏡頭上會觸發 `OverconstrainedError`。
+   - **修正措施**：
+     - 重構 `startSlitScanLoop()` 為獨立的 `this._captureSliceFn()`，由永不中斷的 `requestAnimationFrame` 主迴圈搭配 `video.requestVideoFrameCallback` 雙軌驅動（並具備 5ms 防重覆取樣保護），即使相機重啟或切換鏡頭也絕不中斷。
+     - `startCameraStream()` 改用軟性 `frameRate: { ideal: targetFps }` 並加上 `try / catch` 自動降級機制，確保所有手機鏡頭皆能順利開啟並錄製狹縫畫面。
 2. **Service Worker 與版本升級**：
-   - 升級至 `profinish-v5.1`，更新 `index.html` 腳本引用版本 `app.js?v=5.1`。
+   - 升級至 `profinish-v5.2`，更新 `index.html` 腳本引用版本 `app.js?v=5.2`。
 
 ---
 

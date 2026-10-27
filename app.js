@@ -366,15 +366,23 @@ class ProFinishApp {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         facingMode: deviceId ? undefined : { ideal: 'environment' },
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
-        frameRate: { ideal: targetFps, max: targetFps, min: 30 }
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: targetFps }
       },
       audio: false
     };
 
     try {
-      this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      try {
+        this.cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (constraintErr) {
+        console.warn('[Camera] High-FPS constraint fallback:', constraintErr);
+        this.cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { ideal: deviceId } } : { facingMode: 'environment' },
+          audio: false
+        });
+      }
       this.dom.cameraVideo.srcObject = this.cameraStream;
       this.dom.cameraVideo.onloadedmetadata = () => {
         this.initSlitCanvasDimensions();
@@ -611,149 +619,166 @@ class ProFinishApp {
   }
 
   startSlitScanLoop() {
-    if (this._slitLoopRunning) return;
-    this._slitLoopRunning = true;
     if (typeof this.slitCurrentX !== 'number') {
       this.slitCurrentX = 0;
     }
+    if (typeof this._lastSlicePerfNow !== 'number') {
+      this._lastSlicePerfNow = 0;
+    }
 
-    const onFrame = () => {
-      const video = this.dom.cameraVideo;
-      const canvas = this.dom.slitCanvas;
+    if (!this._captureSliceFn) {
+      this._captureSliceFn = () => {
+        const video = this.dom.cameraVideo;
+        const canvas = this.dom.slitCanvas;
+        if (this.raceState !== 'running' || !canvas) return;
 
-      // Check if race is running and slit scanning is active
-      if (this.raceState === 'running' && canvas) {
-        const elapsedSec = (performance.now() - this.raceStartTime) / 1000;
+        const nowPerf = performance.now();
+        // Deduplicate if both requestVideoFrameCallback and requestAnimationFrame fire within the same <5ms window
+        if (nowPerf - this._lastSlicePerfNow < 5) return;
+        this._lastSlicePerfNow = nowPerf;
 
-        // Check if auto delay seconds have passed
-        if (elapsedSec >= this.autoDelaySeconds) {
-          const ctx = canvas.getContext('2d');
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
-          const hasLiveVideo = Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
-          const vw = hasLiveVideo ? video.videoWidth : 1280;
-          const vh = hasLiveVideo ? video.videoHeight : (canvas.height || 720);
+        const elapsedSec = (nowPerf - this.raceStartTime) / 1000;
+        if (elapsedSec < this.autoDelaySeconds) return;
 
-          if (canvas.height !== vh) {
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
-            tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        const hasLiveVideo = Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
+        const vw = hasLiveVideo ? video.videoWidth : 1280;
+        const vh = hasLiveVideo ? video.videoHeight : (canvas.height || 720);
 
-            canvas.height = vh;
-            this.drawDemoCanvasGrid();
-            ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
-            tempCanvas.width = 1;
-            tempCanvas.height = 1;
-          }
+        if (canvas.height !== vh) {
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = canvas.width;
+          tempCanvas.height = canvas.height;
+          tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
-          // Calculate slit source column
-          const sliceW = this.sliceWidth;
-          const sourceX = Math.max(0, Math.floor(vw * this.slitXRatio) - Math.floor(sliceW / 2));
+          canvas.height = vh;
+          this.drawDemoCanvasGrid();
+          ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
+          tempCanvas.width = 1;
+          tempCanvas.height = 1;
+        }
 
-          // If canvas buffer runs out of width, extend width dynamically while preserving image
-          if (this.slitCurrentX + sliceW >= canvas.width) {
-            const oldWidth = canvas.width;
-            const newWidth = oldWidth + 1200;
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = oldWidth;
-            tempCanvas.height = canvas.height;
-            tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
+        // Calculate slit source column
+        const sliceW = this.sliceWidth;
+        const sourceX = Math.max(0, Math.floor(vw * this.slitXRatio) - Math.floor(sliceW / 2));
 
-            canvas.width = newWidth;
-            canvas.style.width = `${Math.round(newWidth * this.canvasZoom)}px`;
-            this.drawDemoCanvasGrid();
-            ctx.drawImage(tempCanvas, 0, 0);
-            tempCanvas.width = 1;
-            tempCanvas.height = 1;
-          }
+        // If canvas buffer runs out of width, extend width dynamically while preserving image
+        if (this.slitCurrentX + sliceW >= canvas.width) {
+          const oldWidth = canvas.width;
+          const newWidth = oldWidth + 1200;
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = oldWidth;
+          tempCanvas.height = canvas.height;
+          tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
-          if (hasLiveVideo) {
-            // Render vertical slit slice from live camera to canvas
-            ctx.drawImage(
-              video,
-              sourceX, 0, sliceW, vh,
-              this.slitCurrentX, 0, sliceW, canvas.height
-            );
-          } else {
-            // Fallback synthetic track slice when testing without camera hardware
-            const laneH = canvas.height / 6;
-            const vestColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
-            for (let i = 0; i < 6; i++) {
-              const bgFill = (i % 2 === 0) ? '#1e293b' : '#0f172a';
-              ctx.fillStyle = bgFill;
-              ctx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
-              // Draw lane divider dot
-              if (this.slitCurrentX % 8 < sliceW) {
-                ctx.fillStyle = 'rgba(255,255,255,0.22)';
-                ctx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
-              }
-              // Draw simulated runner torso crossing around 1.2s ~ 3.2s for camera-less testing
-              const targetCrossSec = 1.2 + i * 0.32;
-              if (Math.abs(elapsedSec - targetCrossSec) < 0.08) {
-                const centerY = (i + 0.5) * laneH;
-                ctx.fillStyle = vestColors[i];
-                ctx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
-              }
-            }
-          }
+          canvas.width = newWidth;
+          canvas.style.width = `${Math.round(newWidth * this.canvasZoom)}px`;
+          this.drawDemoCanvasGrid();
+          ctx.drawImage(tempCanvas, 0, 0);
+          tempCanvas.width = 1;
+          tempCanvas.height = 1;
+        }
 
-          // Subtle lane guide ticks on top of slice
+        if (hasLiveVideo) {
+          // Render vertical slit slice from live camera to canvas
+          ctx.drawImage(
+            video,
+            sourceX, 0, sliceW, vh,
+            this.slitCurrentX, 0, sliceW, canvas.height
+          );
+        } else {
+          // Fallback synthetic track slice when testing without camera hardware
           const laneH = canvas.height / 6;
-          if (this.slitCurrentX % 12 < sliceW) {
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
-            for (let i = 1; i < 6; i++) {
-              ctx.fillRect(this.slitCurrentX, Math.round(i * laneH), sliceW, 1);
+          const vestColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
+          for (let i = 0; i < 6; i++) {
+            const bgFill = (i % 2 === 0) ? '#1e293b' : '#0f172a';
+            ctx.fillStyle = bgFill;
+            ctx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
+            // Draw lane divider dot
+            if (this.slitCurrentX % 8 < sliceW) {
+              ctx.fillStyle = 'rgba(255,255,255,0.22)';
+              ctx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
             }
-          }
-
-          // Record timestamp metadata
-          this.sliceIndex.push({
-            x: this.slitCurrentX,
-            timeSec: elapsedSec
-          });
-
-          // Draw a time marker every 0.5s / 1.0s at the top of the display canvas
-          const prevSlice = this.sliceIndex[this.sliceIndex.length - 2];
-          if (prevSlice && Math.floor(elapsedSec * 2) > Math.floor(prevSlice.timeSec * 2)) {
-            const halfSec = (Math.floor(elapsedSec * 2) / 2).toFixed(1);
-            const isFullSec = halfSec.endsWith('.0');
-            ctx.fillStyle = isFullSec ? 'rgba(239, 68, 68, 0.95)' : 'rgba(250, 204, 21, 0.75)';
-            ctx.fillRect(this.slitCurrentX, 0, 1.5, isFullSec ? 24 : 14);
-            ctx.fillStyle = '#ffffff';
-            ctx.font = isFullSec ? 'bold 12px monospace' : '10px monospace';
-            ctx.fillText(`${halfSec}s`, this.slitCurrentX + 3, isFullSec ? 16 : 12);
-          }
-
-          this.slitCurrentX += sliceW;
-          if (this.dom.canvasEmptyPrompt) {
-            this.dom.canvasEmptyPrompt.classList.add('hidden');
-          }
-
-          // Auto-scroll the viewport following the active write head (not the blank right end!)
-          if (this.dom.canvasViewport) {
-            const vp = this.dom.canvasViewport;
-            const headCssX = this.slitCurrentX * this.canvasZoom;
-            if (headCssX > vp.clientWidth * 0.75) {
-              vp.scrollLeft = Math.max(0, headCssX - vp.clientWidth * 0.75);
-            } else {
-              vp.scrollLeft = 0;
+            // Draw simulated runner torso crossing around 1.2s ~ 3.2s for camera-less testing
+            const targetCrossSec = 1.2 + i * 0.32;
+            if (Math.abs(elapsedSec - targetCrossSec) < 0.08) {
+              const centerY = (i + 0.5) * laneH;
+              ctx.fillStyle = vestColors[i];
+              ctx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
             }
           }
         }
-      }
 
-      if (hasLiveVideo && typeof video.requestVideoFrameCallback === 'function' && !video.paused) {
-        video.requestVideoFrameCallback(onFrame);
-      } else {
-        requestAnimationFrame(onFrame);
-      }
-    };
+        // Subtle lane guide ticks on top of slice
+        const laneH = canvas.height / 6;
+        if (this.slitCurrentX % 12 < sliceW) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+          for (let i = 1; i < 6; i++) {
+            ctx.fillRect(this.slitCurrentX, Math.round(i * laneH), sliceW, 1);
+          }
+        }
 
-    if (this.dom.cameraVideo && typeof this.dom.cameraVideo.requestVideoFrameCallback === 'function' && !this.dom.cameraVideo.paused) {
-      this.dom.cameraVideo.requestVideoFrameCallback(onFrame);
-    } else {
-      requestAnimationFrame(onFrame);
+        // Record timestamp metadata
+        this.sliceIndex.push({
+          x: this.slitCurrentX,
+          timeSec: elapsedSec
+        });
+
+        // Draw a time marker every 0.5s / 1.0s at the top of the display canvas
+        const prevSlice = this.sliceIndex[this.sliceIndex.length - 2];
+        if (prevSlice && Math.floor(elapsedSec * 2) > Math.floor(prevSlice.timeSec * 2)) {
+          const halfSec = (Math.floor(elapsedSec * 2) / 2).toFixed(1);
+          const isFullSec = halfSec.endsWith('.0');
+          ctx.fillStyle = isFullSec ? 'rgba(239, 68, 68, 0.95)' : 'rgba(250, 204, 21, 0.75)';
+          ctx.fillRect(this.slitCurrentX, 0, 1.5, isFullSec ? 24 : 14);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = isFullSec ? 'bold 12px monospace' : '10px monospace';
+          ctx.fillText(`${halfSec}s`, this.slitCurrentX + 3, isFullSec ? 16 : 12);
+        }
+
+        this.slitCurrentX += sliceW;
+        if (this.dom.canvasEmptyPrompt) {
+          this.dom.canvasEmptyPrompt.classList.add('hidden');
+        }
+
+        // Auto-scroll the viewport following the active write head (not the blank right end!)
+        if (this.dom.canvasViewport) {
+          const vp = this.dom.canvasViewport;
+          const headCssX = this.slitCurrentX * this.canvasZoom;
+          if (headCssX > vp.clientWidth * 0.75) {
+            vp.scrollLeft = Math.max(0, headCssX - vp.clientWidth * 0.75);
+          } else {
+            vp.scrollLeft = 0;
+          }
+        }
+      };
+    }
+
+    // 1. Primary rock-solid requestAnimationFrame loop (never stalls even if camera restarts or is paused)
+    if (!this._slitLoopRunning) {
+      this._slitLoopRunning = true;
+      const onAnimFrame = () => {
+        this._captureSliceFn();
+        requestAnimationFrame(onAnimFrame);
+      };
+      requestAnimationFrame(onAnimFrame);
+    }
+
+    // 2. Supplemental hardware video frame callback for 120 FPS cameras on 60Hz screens
+    const video = this.dom.cameraVideo;
+    if (video && typeof video.requestVideoFrameCallback === 'function') {
+      if (this._vfcHandle && typeof video.cancelVideoFrameCallback === 'function') {
+        try { video.cancelVideoFrameCallback(this._vfcHandle); } catch (e) {}
+      }
+      const onVideoFrame = () => {
+        this._captureSliceFn();
+        if (this.dom.cameraVideo && typeof this.dom.cameraVideo.requestVideoFrameCallback === 'function') {
+          this._vfcHandle = this.dom.cameraVideo.requestVideoFrameCallback(onVideoFrame);
+        }
+      };
+      this._vfcHandle = video.requestVideoFrameCallback(onVideoFrame);
     }
   }
 
