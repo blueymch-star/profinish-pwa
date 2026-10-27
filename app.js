@@ -39,6 +39,8 @@ class ProFinishApp {
     // Array of: { x: pixelOffset, timeSec: relativeSeconds }
     this.sliceIndex = [];
     this.currentCursorTimeSec = 0;
+    // Offscreen clean slit-scan buffer (stores pure camera slices without text/pins for 8x magnified export)
+    this.rawSlitCanvas = document.createElement('canvas');
 
     // PeerJS & PTP-Lite Sync State
     this.roomCode = '2026';
@@ -416,26 +418,50 @@ class ProFinishApp {
         tempCanvas.height = canvas.height;
         tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
+        const tempRaw = document.createElement('canvas');
+        if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
+          tempRaw.width = this.rawSlitCanvas.width;
+          tempRaw.height = this.rawSlitCanvas.height;
+          tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
+        }
+
+        const newW = Math.max(canvas.width, targetWidth);
         canvas.height = h;
-        canvas.width = Math.max(canvas.width, targetWidth);
+        canvas.width = newW;
+        if (this.rawSlitCanvas) {
+          this.rawSlitCanvas.height = h;
+          this.rawSlitCanvas.width = newW;
+        }
         this.drawDemoCanvasGrid();
         canvas.getContext('2d').drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
+        if (this.rawSlitCanvas && tempRaw.width > 0) {
+          this.rawSlitCanvas.getContext('2d').drawImage(tempRaw, 0, 0, tempRaw.width, this.rawSlitCanvas.height);
+        }
         this.drawLaneBadgesOverlay();
       } else {
         canvas.height = h;
         canvas.width = targetWidth;
+        if (this.rawSlitCanvas) {
+          this.rawSlitCanvas.height = h;
+          this.rawSlitCanvas.width = targetWidth;
+        }
         this.drawDemoCanvasGrid();
       }
     } else if (!hasRecordedSlices) {
+      if (this.rawSlitCanvas && (this.rawSlitCanvas.width !== canvas.width || this.rawSlitCanvas.height !== canvas.height)) {
+        this.rawSlitCanvas.width = canvas.width;
+        this.rawSlitCanvas.height = canvas.height;
+      }
       this.drawDemoCanvasGrid();
     }
   }
 
-  drawLaneBadgesOverlay() {
+  drawLaneBadgesOverlay(targetCtx = null, canvasHeight = null) {
     const canvas = this.dom.slitCanvas;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const laneHeight = canvas.height / 6;
+    if (!targetCtx && !canvas) return;
+    const ctx = targetCtx || canvas.getContext('2d');
+    const h = canvasHeight || canvas.height;
+    const laneHeight = h / 6;
     const laneColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
     const laneNames = ['第 6 道 (綠) ⬆頂', '第 5 道 (橘)', '第 4 道 (紫)', '第 3 道 (黃)', '第 2 道 (藍)', '第 1 道 (紅) ⬇底'];
     const heat = this.heatData[this.currentHeat];
@@ -473,6 +499,16 @@ class ProFinishApp {
     for (let i = 0; i < 6; i++) {
       ctx.fillStyle = (i % 2 === 0) ? 'rgba(30, 41, 59, 0.55)' : 'rgba(15, 23, 42, 0.55)';
       ctx.fillRect(0, i * laneHeight, canvas.width, laneHeight);
+    }
+
+    // Keep rawSlitCanvas clean with just the 6-lane background (no text or pins)
+    if (this.rawSlitCanvas) {
+      if (this.rawSlitCanvas.width !== canvas.width || this.rawSlitCanvas.height !== canvas.height) {
+        this.rawSlitCanvas.width = canvas.width;
+        this.rawSlitCanvas.height = canvas.height;
+      }
+      const rawCtx = this.rawSlitCanvas.getContext('2d');
+      rawCtx.drawImage(canvas, 0, 0);
     }
 
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
@@ -525,6 +561,11 @@ class ProFinishApp {
           const ctx = canvas.getContext('2d');
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
+          const rawCtx = this.rawSlitCanvas ? this.rawSlitCanvas.getContext('2d') : null;
+          if (rawCtx) {
+            rawCtx.imageSmoothingEnabled = true;
+            rawCtx.imageSmoothingQuality = 'high';
+          }
           const hasLiveVideo = Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
           const vw = hasLiveVideo ? video.videoWidth : 1280;
           const vh = hasLiveVideo ? video.videoHeight : (canvas.height || 720);
@@ -534,9 +575,21 @@ class ProFinishApp {
             tempCanvas.width = canvas.width;
             tempCanvas.height = canvas.height;
             tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
+
+            const tempRaw = document.createElement('canvas');
+            if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
+              tempRaw.width = this.rawSlitCanvas.width;
+              tempRaw.height = this.rawSlitCanvas.height;
+              tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
+            }
+
             canvas.height = vh;
+            if (this.rawSlitCanvas) this.rawSlitCanvas.height = vh;
             this.drawDemoCanvasGrid();
             ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
+            if (rawCtx && tempRaw.width > 0) {
+              rawCtx.drawImage(tempRaw, 0, 0, tempRaw.width, this.rawSlitCanvas.height);
+            }
           }
 
           // Calculate slit source column
@@ -552,30 +605,57 @@ class ProFinishApp {
             tempCanvas.height = canvas.height;
             tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
+            const tempRaw = document.createElement('canvas');
+            if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0) {
+              tempRaw.width = this.rawSlitCanvas.width;
+              tempRaw.height = this.rawSlitCanvas.height;
+              tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
+            }
+
             canvas.width = newWidth;
+            if (this.rawSlitCanvas) this.rawSlitCanvas.width = newWidth;
             canvas.style.width = `${Math.round(newWidth * this.canvasZoom)}px`;
             this.drawDemoCanvasGrid();
             ctx.drawImage(tempCanvas, 0, 0);
+            if (rawCtx && tempRaw.width > 0) {
+              rawCtx.drawImage(tempRaw, 0, 0);
+            }
           }
 
           if (hasLiveVideo) {
-            // Render vertical slit slice from live camera to canvas
+            // Render vertical slit slice from live camera to canvas & clean rawSlitCanvas
             ctx.drawImage(
               video,
               sourceX, 0, sliceW, vh,
               this.slitCurrentX, 0, sliceW, canvas.height
             );
+            if (rawCtx) {
+              rawCtx.drawImage(
+                video,
+                sourceX, 0, sliceW, vh,
+                this.slitCurrentX, 0, sliceW, canvas.height
+              );
+            }
           } else {
             // Fallback synthetic track slice when testing without camera hardware
             const laneH = canvas.height / 6;
             const vestColors = ['#16a34a', '#f97316', '#9333ea', '#eab308', '#2563eb', '#dc2626'];
             for (let i = 0; i < 6; i++) {
-              ctx.fillStyle = (i % 2 === 0) ? '#1e293b' : '#0f172a';
+              const bgFill = (i % 2 === 0) ? '#1e293b' : '#0f172a';
+              ctx.fillStyle = bgFill;
               ctx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
+              if (rawCtx) {
+                rawCtx.fillStyle = bgFill;
+                rawCtx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
+              }
               // Draw lane divider dot
               if (this.slitCurrentX % 8 < sliceW) {
                 ctx.fillStyle = 'rgba(255,255,255,0.22)';
                 ctx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
+                if (rawCtx) {
+                  rawCtx.fillStyle = 'rgba(255,255,255,0.22)';
+                  rawCtx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
+                }
               }
               // Draw simulated runner torso crossing around 1.2s ~ 3.2s for camera-less testing
               const targetCrossSec = 1.2 + i * 0.32;
@@ -583,6 +663,10 @@ class ProFinishApp {
                 const centerY = (i + 0.5) * laneH;
                 ctx.fillStyle = vestColors[i];
                 ctx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
+                if (rawCtx) {
+                  rawCtx.fillStyle = vestColors[i];
+                  rawCtx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
+                }
               }
             }
           }
@@ -602,7 +686,7 @@ class ProFinishApp {
             timeSec: elapsedSec
           });
 
-          // Draw a time marker every 0.5s / 1.0s at the top of the canvas
+          // Draw a time marker every 0.5s / 1.0s at the top of the display canvas
           const prevSlice = this.sliceIndex[this.sliceIndex.length - 2];
           if (prevSlice && Math.floor(elapsedSec * 2) > Math.floor(prevSlice.timeSec * 2)) {
             const halfSec = (Math.floor(elapsedSec * 2) / 2).toFixed(1);
@@ -1044,9 +1128,102 @@ class ProFinishApp {
     this.updateCursorPosition(this.currentCursorPixelX || 0, true);
   }
 
+  getPixelXForTime(targetSec) {
+    if (!this.sliceIndex || this.sliceIndex.length === 0) {
+      return Math.max(0, targetSec * 100.0);
+    }
+
+    const first = this.sliceIndex[0];
+    const last = this.sliceIndex[this.sliceIndex.length - 1];
+    const totalDt = last.timeSec - first.timeSec;
+    const totalDx = last.x - first.x;
+    const avgPxPerSec = totalDt > 0.05 ? (totalDx / totalDt) : 100.0;
+
+    if (targetSec <= first.timeSec) {
+      return Math.max(0, first.x - (first.timeSec - targetSec) * avgPxPerSec);
+    }
+    if (targetSec >= last.timeSec) {
+      return last.x + (targetSec - last.timeSec) * avgPxPerSec;
+    }
+
+    // Binary search for closest slice bracketing targetSec
+    let low = 0;
+    let high = this.sliceIndex.length - 1;
+    let closest = first;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const item = this.sliceIndex[mid];
+      if (Math.abs(item.timeSec - targetSec) < Math.abs(closest.timeSec - targetSec)) {
+        closest = item;
+      }
+      if (item.timeSec < targetSec) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return closest.x;
+  }
+
+  redrawSlitCanvasWithOverlays() {
+    const canvas = this.dom.slitCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+
+    if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
+      ctx.drawImage(this.rawSlitCanvas, 0, 0);
+    }
+
+    // Redraw subtle lane guides and time ticks along the top
+    const laneH = canvas.height / 6;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 6; i++) {
+      const y = i * laneH;
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    if (this.sliceIndex && this.sliceIndex.length > 1) {
+      for (let i = 1; i < this.sliceIndex.length; i++) {
+        const cur = this.sliceIndex[i];
+        const prev = this.sliceIndex[i - 1];
+        if (Math.floor(cur.timeSec * 2) > Math.floor(prev.timeSec * 2)) {
+          const halfSec = (Math.floor(cur.timeSec * 2) / 2).toFixed(1);
+          const isFullSec = halfSec.endsWith('.0');
+          ctx.fillStyle = isFullSec ? 'rgba(239, 68, 68, 0.95)' : 'rgba(250, 204, 21, 0.75)';
+          ctx.fillRect(cur.x, 0, 1.5, isFullSec ? 24 : 14);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = isFullSec ? 'bold 12px monospace' : '10px monospace';
+          ctx.fillText(`${halfSec}s`, cur.x + 3, isFullSec ? 16 : 12);
+        }
+      }
+    }
+
+    // Redraw left-edge lane badges
+    this.drawLaneBadgesOverlay();
+
+    // Redraw all currently assigned lane markers
+    const heat = this.heatData[this.currentHeat];
+    if (heat && Array.isArray(heat.lanes)) {
+      heat.lanes.forEach(l => {
+        if (l.officialTime) {
+          const px = (typeof l.pixelX === 'number' && l.pixelX > 0)
+            ? l.pixelX
+            : this.getPixelXForTime(l.rawTime || parseFloat(l.officialTime));
+          this.drawLaneMarkerOnCanvas(l.lane, `${l.officialTime}s`, px);
+        }
+      });
+    }
+  }
+
   assignTimeToLane(laneNum) {
     if (this.currentCursorTimeSec <= 0) {
-      alert('請先在畫卷上滑動游標，對準選手壓線位置！');
+      this.showToast('⚠️ 請先在畫卷上滑動游標，對準選手壓線位置！', 'warn');
       return;
     }
 
@@ -1060,13 +1237,14 @@ class ProFinishApp {
     const roundedTime = Math.ceil(this.currentCursorTimeSec * 100) / 100;
     laneItem.rawTime = this.currentCursorTimeSec;
     laneItem.officialTime = roundedTime.toFixed(2);
+    laneItem.pixelX = this.currentCursorPixelX || Math.round(this.dom.scrubberCursor.offsetLeft / this.canvasZoom);
 
     // Auto sort ranks
     this.recalculateRanks();
     this.renderLanesTable();
 
-    // Redraw lane marker flag on the canvas
-    this.drawLaneMarkerOnCanvas(laneNum, this.dom.officialRoundedTime.textContent);
+    // Cleanly redraw canvas overlays so re-assigned lanes don't leave duplicate ghost lines
+    this.redrawSlitCanvasWithOverlays();
 
     if (navigator.vibrate) navigator.vibrate(50);
 
@@ -1089,10 +1267,13 @@ class ProFinishApp {
     this.dom.assignedCountBadge.textContent = `已判讀 ${assignedLanes.length}/6`;
   }
 
-  drawLaneMarkerOnCanvas(laneNum, timeLabel) {
-    // Optional overlay pin on canvas for official export
-    const ctx = this.dom.slitCanvas.getContext('2d');
-    const pixelX = Math.round(this.dom.scrubberCursor.offsetLeft / this.canvasZoom);
+  drawLaneMarkerOnCanvas(laneNum, timeLabel, customPixelX = null) {
+    const canvas = this.dom.slitCanvas;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const pixelX = (typeof customPixelX === 'number')
+      ? Math.round(customPixelX)
+      : Math.round(this.dom.scrubberCursor.offsetLeft / this.canvasZoom);
     
     // Choose distinct lane colors: 紅、藍、黃、紫、橘、綠
     const colors = ['#dc2626', '#2563eb', '#eab308', '#9333ea', '#f97316', '#16a34a'];
@@ -1101,7 +1282,7 @@ class ProFinishApp {
     const colorName = colorNames[(laneNum - 1) % colorNames.length] || '';
 
     // Calculate vertical position: 螢幕最下方為第 1 道依序往上至第 6 道
-    const canvasH = this.dom.slitCanvas.height;
+    const canvasH = canvas.height;
     const laneH = canvasH / 6;
     const rowIndex = 6 - laneNum; // Lane 1 -> row 5 (bottom), Lane 6 -> row 0 (top)
     const centerY = (rowIndex + 0.5) * laneH;
@@ -1116,7 +1297,9 @@ class ProFinishApp {
     ctx.stroke();
 
     // Flag badge at the specific lane's vertical height
-    const badgeW = 78;
+    ctx.font = 'bold 11px sans-serif';
+    const labelStr = `${laneNum}道(${colorName}) ${timeLabel}`;
+    const badgeW = Math.max(78, Math.ceil(ctx.measureText(labelStr).width) + 10);
     const badgeH = 20;
     const badgeY = Math.max(6, Math.min(canvasH - badgeH - 6, centerY - badgeH / 2));
     ctx.fillStyle = color;
@@ -1132,8 +1315,7 @@ class ProFinishApp {
     ctx.fill();
 
     ctx.fillStyle = (laneNum === 3) ? '#000000' : '#ffffff';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.fillText(`${laneNum}道(${colorName}) ${timeLabel}`, pixelX + 2, badgeY + 14);
+    ctx.fillText(labelStr, pixelX + 2, badgeY + 14);
     ctx.restore();
   }
 
@@ -1256,9 +1438,11 @@ class ProFinishApp {
       if (lane) {
         lane.rawTime = null;
         lane.officialTime = '';
+        lane.pixelX = null;
         lane.rank = '-';
         this.recalculateRanks();
         this.renderLanesTable();
+        this.redrawSlitCanvasWithOverlays();
         this.syncCurrentHeatToBackend(false);
       }
     }
@@ -2398,74 +2582,290 @@ class ProFinishApp {
     this.showToast(`📊 第 ${heatId} 組 CSV 成績單已匯出`, 'success');
   }
 
-  exportPhotoFinishProof() {
+  buildPhotoFinishProofCanvas() {
     const srcCanvas = this.dom.slitCanvas;
-    if (!srcCanvas || srcCanvas.width <= 10) {
-      this.showToast('尚未有終點影像可匯出！', 'warn');
-      return;
-    }
+    if (!srcCanvas || srcCanvas.width <= 10) return null;
 
     const heat = this.heatData[this.currentHeat];
     const heatId = (heat && heat.id) ? heat.id : this.currentHeat;
     const eventTitle = (heat && heat.eventTitle) ? heat.eventTitle : `${this.currentDistance} 公尺`;
-    
-    // Create composite export canvas
+
+    // 1. Determine time window: [firstRunner - 1.0s, lastRunner + 0.5s]
+    const assignedLanes = (heat && Array.isArray(heat.lanes))
+      ? heat.lanes.filter(l => (typeof l.rawTime === 'number' && l.rawTime > 0) || (l.officialTime && parseFloat(l.officialTime) > 0))
+      : [];
+
+    let cropStartTime = 0;
+    let cropEndTime = 3.0;
+    if (assignedLanes.length > 0) {
+      const times = assignedLanes.map(l =>
+        (typeof l.rawTime === 'number' && l.rawTime > 0) ? l.rawTime : parseFloat(l.officialTime)
+      );
+      const firstRunnerTime = Math.min(...times);
+      const lastRunnerTime = Math.max(...times);
+      cropStartTime = Math.max(0, firstRunnerTime - 1.0);
+      cropEndTime = lastRunnerTime + 0.5;
+    } else if (this.sliceIndex && this.sliceIndex.length > 0) {
+      if (this.currentCursorTimeSec > 0) {
+        cropStartTime = Math.max(0, this.currentCursorTimeSec - 1.0);
+        cropEndTime = this.currentCursorTimeSec + 0.5;
+      } else {
+        const firstT = this.sliceIndex[0].timeSec;
+        const lastT = this.sliceIndex[this.sliceIndex.length - 1].timeSec;
+        cropStartTime = Math.max(0, firstT);
+        cropEndTime = Math.max(cropStartTime + 1.5, lastT + 0.5);
+      }
+    }
+
+    // 2. Map time window to source pixel range [cropStartX, cropEndX]
+    const rawStartX = this.getPixelXForTime(cropStartTime);
+    const rawEndX = this.getPixelXForTime(cropEndTime);
+    const cropStartX = Math.max(0, Math.floor(rawStartX));
+    const desiredEndX = Math.max(cropStartX + 24, Math.ceil(rawEndX));
+    const fullSpanPx = Math.max(24, desiredEndX - cropStartX);
+    const availEndX = Math.min(srcCanvas.width, Math.max(cropStartX + 1, desiredEndX));
+    const availCropWidth = Math.max(1, availEndX - cropStartX);
+
+    // 3. Configure 8x horizontal magnification (with iOS Safari 16MP canvas safety guard)
+    const TARGET_ZOOM_X = 8.0;
+    const trackHeight = srcCanvas.height || 720;
+    const headerHeight = 96;
+    const footerHeight = 136;
+    const totalHeight = trackHeight + headerHeight + footerHeight;
+    const maxSafeCanvasWidth = Math.min(14000, Math.floor(15500000 / totalHeight));
+    const zoomedTrackWidth = Math.min(maxSafeCanvasWidth, Math.round(fullSpanPx * TARGET_ZOOM_X));
+    const effectiveZoomX = zoomedTrackWidth / fullSpanPx;
+
     const expCanvas = document.createElement('canvas');
-    const headerHeight = 90;
-    const footerHeight = 120;
-    expCanvas.width = srcCanvas.width;
-    expCanvas.height = srcCanvas.height + headerHeight + footerHeight;
+    expCanvas.width = Math.max(1160, zoomedTrackWidth);
+    expCanvas.height = totalHeight;
 
     const ctx = expCanvas.getContext('2d');
 
-    // Background
+    // Background fill
     ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, expCanvas.width, expCanvas.height);
 
-    // Header Title
+    // Header Title Bar
     ctx.fillStyle = '#ef4444';
     ctx.fillRect(0, 0, expCanvas.width, 6);
 
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 22px sans-serif';
-    ctx.fillText('🏃‍♂️ 校園運動會田徑賽事 · 官方終點攝影壓線判決證明', 20, 38);
+    ctx.fillText('🏃‍♂️ 校園運動會田徑賽事 · 官方終點攝影壓線判決證明 (8x 放大特寫)', 20, 38);
 
     ctx.font = '13px monospace';
     ctx.fillStyle = '#94a3b8';
     const nowStr = new Date().toLocaleString('zh-TW');
-    ctx.fillText(`項目: ${eventTitle} | 組別: 第 ${heatId} 組 | 系統: ProFinish PWA v2.0 | 產生時間: ${nowStr}`, 20, 64);
+    ctx.fillText(
+      `項目: ${eventTitle} | 組別: 第 ${heatId} 組 | 擷取區間: ${cropStartTime.toFixed(2)}s ~ ${cropEndTime.toFixed(2)}s (第一位前1.0s ~ 末位後0.5s · ${effectiveZoomX.toFixed(1)}x放大) | 時間: ${nowStr}`,
+      20,
+      66
+    );
 
-    // Draw main slit scan image
-    ctx.drawImage(srcCanvas, 0, headerHeight);
+    // Draw 6-lane base background bands across full track area
+    const laneH = trackHeight / 6;
+    for (let i = 0; i < 6; i++) {
+      ctx.fillStyle = (i % 2 === 0) ? '#1e293b' : '#0f172a';
+      ctx.fillRect(0, headerHeight + i * laneH, expCanvas.width, laneH);
+    }
 
-    // Footer Table with Official Results
-    const tableTop = headerHeight + srcCanvas.height + 15;
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(10, tableTop - 5, expCanvas.width - 20, footerHeight - 20);
+    // 4. Draw cropped slit-scan imagery stretched 8x horizontally from clean rawSlitCanvas
+    const cleanSource = (this.rawSlitCanvas && this.rawSlitCanvas.width > 10 && this.rawSlitCanvas.height > 10)
+      ? this.rawSlitCanvas
+      : srcCanvas;
+    const drawnZoomedWidth = Math.round(availCropWidth * effectiveZoomX);
 
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = 'bold 12px sans-serif';
-    ctx.fillText('官方判定成績：', 25, tableTop + 16);
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(
+      cleanSource,
+      cropStartX, 0, availCropWidth, trackHeight,
+      0, headerHeight, drawnZoomedWidth, trackHeight
+    );
+    ctx.restore();
 
-    let colX = 130;
+    // 5. Draw crisp 1:1 overlays on top of the 8x-magnified track image
+    // 5a. Subtle horizontal dashed lane dividers
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 5]);
+    for (let i = 1; i < 6; i++) {
+      const y = Math.round(headerHeight + i * laneH);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(expCanvas.width, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // 5b. High-precision Time Ruler along top of track (0.1s / 0.5s / 1.0s ticks)
+    ctx.save();
+    ctx.fillStyle = 'rgba(9, 13, 22, 0.68)';
+    ctx.fillRect(0, headerHeight, expCanvas.width, 28);
+
+    const startTenth = Math.ceil(cropStartTime * 10);
+    const endTenth = Math.floor(cropEndTime * 10);
+    for (let ti = startTenth; ti <= endTenth; ti++) {
+      const tSec = ti / 10.0;
+      const tSrcX = this.getPixelXForTime(tSec);
+      const tickX = Math.round((tSrcX - cropStartX) * effectiveZoomX);
+      if (tickX < 0 || tickX > expCanvas.width) continue;
+
+      const isFullSec = (ti % 10 === 0);
+      const isHalfSec = (ti % 5 === 0) && !isFullSec;
+
+      if (isFullSec) {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.95)';
+        ctx.fillRect(tickX, headerHeight, 2, 22);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText(`${tSec.toFixed(1)}s`, tickX + 4, headerHeight + 16);
+      } else if (isHalfSec) {
+        ctx.fillStyle = 'rgba(250, 204, 21, 0.85)';
+        ctx.fillRect(tickX, headerHeight, 1.5, 16);
+        ctx.fillStyle = '#fef08a';
+        ctx.font = 'bold 11px monospace';
+        ctx.fillText(`${tSec.toFixed(1)}s`, tickX + 4, headerHeight + 15);
+      } else {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.fillRect(tickX, headerHeight, 1, 9);
+        if (effectiveZoomX >= 6) {
+          ctx.fillStyle = 'rgba(203, 213, 225, 0.75)';
+          ctx.font = '10px monospace';
+          ctx.fillText(`.${ti % 10}`, tickX + 2, headerHeight + 21);
+        }
+      }
+    }
+    ctx.restore();
+
+    // 5c. Left-edge 1..6 Lane Identification Badges
+    ctx.save();
+    ctx.translate(0, headerHeight);
+    this.drawLaneBadgesOverlay(ctx, trackHeight);
+    ctx.restore();
+
+    // 5d. Crisp 1:1 Runner Finish Hairlines & Result Flag Badges
+    const laneColors = ['#dc2626', '#2563eb', '#eab308', '#9333ea', '#f97316', '#16a34a'];
+    const laneColorNames = ['紅', '藍', '黃', '紫', '橘', '綠'];
+
     if (heat && Array.isArray(heat.lanes)) {
       heat.lanes.forEach(l => {
-        if (l.officialTime) {
-          ctx.fillStyle = '#38bdf8';
-          ctx.font = 'bold 12px monospace';
-          const vestLabel = l.bib ? `(${l.bib})` : '';
-          ctx.fillText(`[${l.rank}名] ${l.lane}道${vestLabel} ${l.name} (${l.grade}) - ${l.officialTime}s`, colX, tableTop + 16);
-          colX += 240;
+        if (!l.officialTime && !(typeof l.rawTime === 'number' && l.rawTime > 0)) return;
+        const runnerTime = (typeof l.rawTime === 'number' && l.rawTime > 0) ? l.rawTime : parseFloat(l.officialTime);
+        const runnerSrcX = (typeof l.pixelX === 'number' && l.pixelX > 0)
+          ? l.pixelX
+          : this.getPixelXForTime(runnerTime);
+        const pinX = Math.max(2, Math.min(expCanvas.width - 2, Math.round((runnerSrcX - cropStartX) * effectiveZoomX)));
+
+        const color = laneColors[(l.lane - 1) % laneColors.length];
+        const colorName = laneColorNames[(l.lane - 1) % laneColorNames.length] || '';
+        const rowIndex = 6 - l.lane; // Row 0 (top) = 6道, Row 5 (bottom) = 1道
+        const centerY = headerHeight + (rowIndex + 0.5) * laneH;
+
+        ctx.save();
+        // Crisp 2px vertical finish hairline
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(pinX, headerHeight);
+        ctx.lineTo(pinX, headerHeight + trackHeight);
+        ctx.stroke();
+
+        // Flag label with rank, lane, runner name, and official time
+        const rankPrefix = (l.rank && l.rank !== '-') ? `[${l.rank}名] ` : '';
+        const runnerName = l.name ? `${l.name} ` : '';
+        const timeText = l.officialTime ? `${l.officialTime}s` : `${runnerTime.toFixed(2)}s`;
+        const flagLabel = `${rankPrefix}${l.lane}道(${colorName}) ${runnerName}${timeText}`;
+
+        ctx.font = 'bold 13px sans-serif';
+        const badgeW = Math.max(96, Math.ceil(ctx.measureText(flagLabel).width) + 16);
+        const badgeH = 24;
+        const badgeY = Math.max(
+          headerHeight + 30,
+          Math.min(headerHeight + trackHeight - badgeH - 6, centerY - badgeH / 2)
+        );
+
+        // Automatically flip badge to left side if close to right canvas border
+        const flipLeft = (pinX + badgeW + 14 > expCanvas.width);
+        const badgeX = flipLeft ? (pinX - badgeW - 4) : (pinX + 4);
+
+        ctx.fillStyle = color;
+        ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+
+        // Pointer triangle toward finish line
+        ctx.beginPath();
+        if (flipLeft) {
+          ctx.moveTo(pinX - 4, centerY - 5);
+          ctx.lineTo(pinX, centerY);
+          ctx.lineTo(pinX - 4, centerY + 5);
+        } else {
+          ctx.moveTo(pinX + 4, centerY - 5);
+          ctx.lineTo(pinX, centerY);
+          ctx.lineTo(pinX + 4, centerY + 5);
         }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = (l.lane === 3) ? '#000000' : '#ffffff';
+        ctx.fillText(flagLabel, badgeX + 8, badgeY + 16);
+        ctx.restore();
       });
     }
 
-    const fileName = `ProFinish_第${heatId}組_${eventTitle}_壓線判定圖.png`;
+    // 6. Footer Table with Official Results (2-row x 3-col grid so nothing ever gets cut off)
+    const tableTop = headerHeight + trackHeight + 12;
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(12, tableTop, expCanvas.width - 24, footerHeight - 24);
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText('🏆 官方判定成績總覽：', 28, tableTop + 26);
+
+    if (heat && Array.isArray(heat.lanes)) {
+      const sortedLanes = [...heat.lanes]
+        .filter(l => l.officialTime)
+        .sort((a, b) => (parseInt(a.rank, 10) || 99) - (parseInt(b.rank, 10) || 99));
+
+      const colWidth = Math.max(300, Math.floor((expCanvas.width - 60) / 3));
+      sortedLanes.forEach((l, idx) => {
+        const col = idx % 3;
+        const row = Math.floor(idx / 3);
+        const itemX = 32 + col * colWidth;
+        const itemY = tableTop + 56 + row * 32;
+        const vestLabel = l.bib ? `(${l.bib})` : '';
+        ctx.fillStyle = (l.rank === '1') ? '#facc15' : '#38bdf8';
+        ctx.font = 'bold 14px monospace';
+        ctx.fillText(
+          `[第 ${l.rank} 名] ${l.lane}道${vestLabel} ${l.grade || ''} ${l.name || ''} — ${l.officialTime}s`,
+          itemX,
+          itemY
+        );
+      });
+    }
+
+    return { expCanvas, heatId, eventTitle, cropStartTime, cropEndTime };
+  }
+
+  exportPhotoFinishProof() {
+    const built = this.buildPhotoFinishProofCanvas();
+    if (!built || !built.expCanvas) {
+      this.showToast('尚未有終點影像可匯出！', 'warn');
+      return;
+    }
+
+    const { expCanvas, heatId, eventTitle, cropStartTime, cropEndTime } = built;
+    const fileName = `ProFinish_第${heatId}組_${eventTitle}_壓線判定圖_8x放大.png`;
 
     // Download PNG locally using async toBlob (non-blocking to preserve WebRTC P2P connection)
     expCanvas.toBlob((blob) => {
       this.triggerSafeBlobDownload(blob, fileName);
-      this.showToast(`📸 第 ${heatId} 組壓線證明圖已儲存！`, 'success');
+      this.showToast(
+        `📸 已儲存 8x 放大壓線證明圖 (${cropStartTime.toFixed(1)}s~${cropEndTime.toFixed(1)}s)！`,
+        'success'
+      );
 
       // Silently upload lightweight JPEG proof to PC backend in background without blocking main thread
       setTimeout(() => {
@@ -2642,7 +3042,9 @@ class ProFinishApp {
     let proofImage = customProofDataUrl;
     if (!proofImage && withToast && this.dom.slitCanvas && this.dom.slitCanvas.width > 10) {
       try {
-        proofImage = this.dom.slitCanvas.toDataURL('image/jpeg', 0.82);
+        const built = this.buildPhotoFinishProofCanvas();
+        const targetCanvas = (built && built.expCanvas) ? built.expCanvas : this.dom.slitCanvas;
+        proofImage = targetCanvas.toDataURL('image/jpeg', 0.82);
       } catch (e) {}
     }
 
