@@ -1,26 +1,26 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-27 18:56  
+**更新時間**：2026-10-27 19:49  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v4.8)
+## 📋 本次完成事項 (v4.9)
 
-1. **實裝「自動截取第一位選手前 1 秒 ～ 最後一位選手後 0.5 秒」與「8 倍水平放大特寫」**：
+1. **修復儲存壓線證明圖後返回「攝影計時」畫面全黑問題**：
    - **問題根因**：
-     狹縫攝影時間軸在 1x 匯出時，選手壓線過程約 0.08~0.15 秒僅佔少數像素，導致整張匯出圖人物過扁成細線無法辨識軀幹胸部壓線位置；且若直接對帶有文字標記的 Canvas 放大，會導致文字與判定線被拉寬 8 倍模糊變形。
+     1. 行動裝置（iOS Safari / Android Chrome）觸發圖檔下載（`<a download>`）或跳出系統存檔預覽時，會自動暫停 `<video id="cameraVideo">` 播放或中斷/靜音相機 `MediaStreamTrack`（`readyState === 'ended'` 或 `muted`）。
+     2. 原先 `rawSlitCanvas` 雙緩衝加上巨幅 `expCanvas`（最高達 14000px 寬）未於匯出後立即釋放 GPU 記憶體，且 `#reviewDrawer` 使用全畫面 `backdrop-blur-2xl`，觸發行動版 WebKit GPU 貼圖記憶體上限（Total canvas memory limit），導致硬體相機解碼畫面被系統強制卸載變黑。
    - **修正措施**：
-     - **純影像雙緩衝機制 (`rawSlitCanvas`)**：新增離屏畫布記錄純淨無字體之狹縫相機切片，確保 8 倍放大時僅拉伸跑道與選手影像。
-     - **自動計算時間裁切區間**：判讀完畢後，自動找出當前組別已判定成績的最早時間 `firstRunnerTime` 與最晚時間 `lastRunnerTime`，截取範圍固定為 `[Math.max(0, firstRunnerTime - 1.0), lastRunnerTime + 0.5]`，自動排除起跑前冗長空白區。
-     - **水平放大 8 倍 (`TARGET_ZOOM_X = 8.0`)**：開啟雙線性平滑濾鏡（`imageSmoothingQuality = 'high'`），人物寬度放大 8 倍，胸口壓線與號碼衣清晰可辨。
-     - **iOS Safari 16MP 畫布安全防護**：自動防護寬度上限（最高 14,000px / 15.5 MP），防止行動裝置瀏覽器記憶體崩潰。
-     - **1:1 原生清晰文字與標記層疊**：放大底圖後，以 1:1 比例疊加頂部 0.1s 精密時間尺、左緣 1~6 道次名牌、2px 垂直判定線與名次標籤（靠右邊界時自動向左翻轉不被切除），以及底部 2 列×3 欄名次總覽。
-     - **判讀殘影重繪防護**：修正 `redrawSlitCanvasWithOverlays()`，裁判重選道次或按「清除」時舊線條立即消失，不再留下重疊殘影。
-2. **Service Worker 與版本升級**：
-   - 升級至 `profinish-v4.8`，更新 `index.html` 腳本引用版本 `app.js?v=4.8`。
+     - **移除雙倍 Canvas 記憶體開銷**：改以輕量 DOM 疊加層（`#laneMarkersOverlay`）呈現判讀畫卷上的道次壓線標記，不再建立第二張全尺寸 `rawSlitCanvas`，使 `slitCanvas` 本身保持純淨且記憶體減半。
+     - **匯出後立即釋放 GPU 畫布記憶體**：將證明圖匯出畫布上限控制在安全的 `4096×720` 內，並在 `toBlob()` 完成瞬間執行 `expCanvas.width = 1; expCanvas.height = 1;` 立即歸還 GPU 記憶體；同時移除 `#reviewDrawer` 的 `backdrop-blur-2xl`。
+     - **實裝相機自動喚醒與凍結看門狗 (`ensureCameraAlive()`)**：於點擊「⬇ 回攝影」收合抽屜、觸發檔案下載後、以及 `visibilitychange` / `focus` / `pageshow` 時自動檢查相機狀態；若偵測到 `<video>` 暫停、軌道中斷或畫面時間軸 `video.currentTime` 凍結未推進，立即自動重啟相機串流。
+2. **實裝「自動截取第一位選手前 1 秒 ～ 最後一位選手後 0.5 秒」與「8 倍水平放大特寫」**：
+   - 自動找出當前組別已判定成績的最早時間 `firstRunnerTime` 與最晚時間 `lastRunnerTime`，截取範圍固定為 `[Math.max(0, firstRunnerTime - 1.0), lastRunnerTime + 0.5]`，並水平放大 8 倍繪製，搭配 1:1 原生清晰時間尺與道次名次旗標。
+3. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v4.9`，更新 `index.html` 腳本引用版本 `app.js?v=4.9`。
 
 ---
 

@@ -39,8 +39,6 @@ class ProFinishApp {
     // Array of: { x: pixelOffset, timeSec: relativeSeconds }
     this.sliceIndex = [];
     this.currentCursorTimeSec = 0;
-    // Offscreen clean slit-scan buffer (stores pure camera slices without text/pins for 8x magnified export)
-    this.rawSlitCanvas = document.createElement('canvas');
 
     // PeerJS & PTP-Lite Sync State
     this.roomCode = '2026';
@@ -140,6 +138,7 @@ class ProFinishApp {
       slitRange: document.getElementById('slitRange'),
       slitPosLabel: document.getElementById('slitPosLabel'),
       slitCanvas: document.getElementById('slitCanvas'),
+      laneMarkersOverlay: document.getElementById('laneMarkersOverlay'),
       canvasViewport: document.getElementById('canvasViewport'),
       canvasEmptyPrompt: document.getElementById('canvasEmptyPrompt'),
       scrubberCursor: document.getElementById('scrubberCursor'),
@@ -193,6 +192,9 @@ class ProFinishApp {
   toggleToolsDrawer() {
     if (!this.dom.toolsDrawer) return;
     this.dom.toolsDrawer.classList.toggle('translate-x-full');
+    if (this.dom.toolsDrawer.classList.contains('translate-x-full')) {
+      this.ensureCameraAlive();
+    }
   }
 
   toggleReviewDrawer() {
@@ -206,6 +208,7 @@ class ProFinishApp {
       // Ensure canvas dimensions and grid are initialized without wiping recorded slices
       this.initSlitCanvasDimensions();
       this.applyCanvasZoom();
+      this.renderLaneMarkersOverlay();
 
       // Position cursor on recorded slices (or default 150px) and scroll into view
       let targetX = this.currentCursorPixelX;
@@ -219,6 +222,11 @@ class ProFinishApp {
       requestAnimationFrame(() => {
         this.updateCursorPosition(this.currentCursorPixelX || targetX, true);
       });
+    } else {
+      // Returning to live camera view ("回攝影"): immediately wake up / heal camera stream if paused or dropped during photo export
+      this.ensureCameraAlive();
+      setTimeout(() => this.ensureCameraAlive(), 250);
+      setTimeout(() => this.ensureCameraAlive(), 700);
     }
   }
 
@@ -356,11 +364,24 @@ class ProFinishApp {
       };
       await this.dom.cameraVideo.play();
 
-      // Read track capabilities (e.g. zoom, fps)
+      // Read track capabilities (e.g. zoom, fps) & bind auto-recovery if mobile OS stops/mutes camera during file save
       const track = this.cameraStream.getVideoTracks()[0];
-      const settings = track.getSettings();
-      if (settings.frameRate) {
-        this.dom.camFpsBadge.textContent = `${Math.round(settings.frameRate)} FPS`;
+      if (track) {
+        const settings = track.getSettings ? track.getSettings() : {};
+        if (settings.frameRate && this.dom.camFpsBadge) {
+          this.dom.camFpsBadge.textContent = `${Math.round(settings.frameRate)} FPS`;
+        }
+        track.onended = () => {
+          console.warn('[Camera] Video track ended unexpectedly, scheduling auto-restart...');
+          if (this.role === 'finish' && document.visibilityState === 'visible') {
+            setTimeout(() => this.ensureCameraAlive(), 200);
+          }
+        };
+      }
+
+      if (this.dom.camLensBadge) {
+        this.dom.camLensBadge.textContent = '主鏡頭 1x';
+        this.dom.camLensBadge.classList.remove('text-red-400');
       }
 
       // Immediately initialize canvas dimensions now that video is playing
@@ -370,11 +391,85 @@ class ProFinishApp {
       this.startSlitScanLoop();
     } catch (err) {
       console.error('Camera stream access failed:', err);
-      this.dom.camLensBadge.textContent = '相機未授權';
-      this.dom.camLensBadge.classList.add('text-red-400');
+      if (this.dom.camLensBadge) {
+        this.dom.camLensBadge.textContent = '相機未授權';
+        this.dom.camLensBadge.classList.add('text-red-400');
+      }
       this.initSlitCanvasDimensions();
       this.startSlitScanLoop();
     }
+  }
+
+  async ensureCameraAlive() {
+    if (this.role !== 'finish') return;
+    if (document.visibilityState === 'hidden') return;
+    if (this._restartingCamera) return;
+
+    const video = this.dom.cameraVideo;
+    if (!video) return;
+
+    const tracks = this.cameraStream ? this.cameraStream.getVideoTracks() : [];
+    const mainTrack = tracks[0];
+
+    // 1. If stream or video track was killed/ended/muted by mobile OS during download dialog, restart camera stream
+    if (
+      !this.cameraStream ||
+      !this.cameraStream.active ||
+      !mainTrack ||
+      mainTrack.readyState === 'ended' ||
+      mainTrack.muted
+    ) {
+      console.log('[Camera] Healing inactive/ended camera stream...');
+      this._restartingCamera = true;
+      try {
+        await this.startCameraStream(this.selectedCameraId);
+      } finally {
+        this._restartingCamera = false;
+      }
+      return;
+    }
+
+    if (!mainTrack.enabled) {
+      mainTrack.enabled = true;
+    }
+
+    if (video.srcObject !== this.cameraStream) {
+      video.srcObject = this.cameraStream;
+    }
+
+    // 2. If video element was paused by mobile browser during file download, resume playback
+    if (video.paused || video.ended || video.readyState < 2) {
+      try {
+        await video.play();
+      } catch (e) {
+        this._restartingCamera = true;
+        try {
+          await this.startCameraStream(this.selectedCameraId);
+        } finally {
+          this._restartingCamera = false;
+        }
+        return;
+      }
+    }
+
+    // 3. Hardware frame-advance watchdog: verify video clock is actually advancing (not stuck on a black frame)
+    const t0 = video.currentTime;
+    clearTimeout(this._camWatchdogTimer);
+    this._camWatchdogTimer = setTimeout(async () => {
+      if (this.role !== 'finish' || document.visibilityState === 'hidden' || this._restartingCamera) return;
+      const curTracks = this.cameraStream ? this.cameraStream.getVideoTracks() : [];
+      const curTrack = curTracks[0];
+      const isFrozen = (video.paused || video.readyState < 2 || video.videoWidth === 0 || video.currentTime === t0);
+      if (!curTrack || curTrack.readyState === 'ended' || isFrozen) {
+        console.warn('[Camera] Watchdog detected frozen/black video feed after returning, restarting stream...');
+        this._restartingCamera = true;
+        try {
+          await this.startCameraStream(this.selectedCameraId);
+        } finally {
+          this._restartingCamera = false;
+        }
+      }
+    }, 380);
   }
 
   switchCamera(deviceId) {
@@ -402,58 +497,24 @@ class ProFinishApp {
   }
 
   initSlitCanvasDimensions() {
-    const video = this.dom.cameraVideo;
-    const h = (video && video.videoHeight) || 720;
     const canvas = this.dom.slitCanvas;
     if (!canvas) return;
 
-    const targetWidth = Math.max(1600, window.innerWidth * 3);
+    // Never resize or touch canvas buffer if recorded race slices already exist!
     const hasRecordedSlices = (this.sliceIndex && this.sliceIndex.length > 0) || (this.slitCurrentX > 0);
+    if (hasRecordedSlices && canvas.width > 0 && canvas.height > 0) {
+      return;
+    }
+
+    const video = this.dom.cameraVideo;
+    const h = (video && video.videoHeight) || canvas.height || 720;
+    const targetWidth = Math.max(1600, window.innerWidth * 3);
 
     if (canvas.height !== h || canvas.width < 1200) {
-      if (hasRecordedSlices && canvas.width > 0 && canvas.height > 0) {
-        // Preserve already recorded race imagery when adjusting canvas buffer size
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = canvas.width;
-        tempCanvas.height = canvas.height;
-        tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
-
-        const tempRaw = document.createElement('canvas');
-        if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
-          tempRaw.width = this.rawSlitCanvas.width;
-          tempRaw.height = this.rawSlitCanvas.height;
-          tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
-        }
-
-        const newW = Math.max(canvas.width, targetWidth);
-        canvas.height = h;
-        canvas.width = newW;
-        if (this.rawSlitCanvas) {
-          this.rawSlitCanvas.height = h;
-          this.rawSlitCanvas.width = newW;
-        }
-        this.drawDemoCanvasGrid();
-        canvas.getContext('2d').drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
-        if (this.rawSlitCanvas && tempRaw.width > 0) {
-          this.rawSlitCanvas.getContext('2d').drawImage(tempRaw, 0, 0, tempRaw.width, this.rawSlitCanvas.height);
-        }
-        this.drawLaneBadgesOverlay();
-      } else {
-        canvas.height = h;
-        canvas.width = targetWidth;
-        if (this.rawSlitCanvas) {
-          this.rawSlitCanvas.height = h;
-          this.rawSlitCanvas.width = targetWidth;
-        }
-        this.drawDemoCanvasGrid();
-      }
-    } else if (!hasRecordedSlices) {
-      if (this.rawSlitCanvas && (this.rawSlitCanvas.width !== canvas.width || this.rawSlitCanvas.height !== canvas.height)) {
-        this.rawSlitCanvas.width = canvas.width;
-        this.rawSlitCanvas.height = canvas.height;
-      }
-      this.drawDemoCanvasGrid();
+      canvas.height = h;
+      canvas.width = targetWidth;
     }
+    this.drawDemoCanvasGrid();
   }
 
   drawLaneBadgesOverlay(targetCtx = null, canvasHeight = null) {
@@ -499,16 +560,6 @@ class ProFinishApp {
     for (let i = 0; i < 6; i++) {
       ctx.fillStyle = (i % 2 === 0) ? 'rgba(30, 41, 59, 0.55)' : 'rgba(15, 23, 42, 0.55)';
       ctx.fillRect(0, i * laneHeight, canvas.width, laneHeight);
-    }
-
-    // Keep rawSlitCanvas clean with just the 6-lane background (no text or pins)
-    if (this.rawSlitCanvas) {
-      if (this.rawSlitCanvas.width !== canvas.width || this.rawSlitCanvas.height !== canvas.height) {
-        this.rawSlitCanvas.width = canvas.width;
-        this.rawSlitCanvas.height = canvas.height;
-      }
-      const rawCtx = this.rawSlitCanvas.getContext('2d');
-      rawCtx.drawImage(canvas, 0, 0);
     }
 
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
@@ -561,11 +612,6 @@ class ProFinishApp {
           const ctx = canvas.getContext('2d');
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
-          const rawCtx = this.rawSlitCanvas ? this.rawSlitCanvas.getContext('2d') : null;
-          if (rawCtx) {
-            rawCtx.imageSmoothingEnabled = true;
-            rawCtx.imageSmoothingQuality = 'high';
-          }
           const hasLiveVideo = Boolean(video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0);
           const vw = hasLiveVideo ? video.videoWidth : 1280;
           const vh = hasLiveVideo ? video.videoHeight : (canvas.height || 720);
@@ -576,20 +622,11 @@ class ProFinishApp {
             tempCanvas.height = canvas.height;
             tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
-            const tempRaw = document.createElement('canvas');
-            if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
-              tempRaw.width = this.rawSlitCanvas.width;
-              tempRaw.height = this.rawSlitCanvas.height;
-              tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
-            }
-
             canvas.height = vh;
-            if (this.rawSlitCanvas) this.rawSlitCanvas.height = vh;
             this.drawDemoCanvasGrid();
             ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, canvas.height);
-            if (rawCtx && tempRaw.width > 0) {
-              rawCtx.drawImage(tempRaw, 0, 0, tempRaw.width, this.rawSlitCanvas.height);
-            }
+            tempCanvas.width = 1;
+            tempCanvas.height = 1;
           }
 
           // Calculate slit source column
@@ -605,37 +642,21 @@ class ProFinishApp {
             tempCanvas.height = canvas.height;
             tempCanvas.getContext('2d').drawImage(canvas, 0, 0);
 
-            const tempRaw = document.createElement('canvas');
-            if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0) {
-              tempRaw.width = this.rawSlitCanvas.width;
-              tempRaw.height = this.rawSlitCanvas.height;
-              tempRaw.getContext('2d').drawImage(this.rawSlitCanvas, 0, 0);
-            }
-
             canvas.width = newWidth;
-            if (this.rawSlitCanvas) this.rawSlitCanvas.width = newWidth;
             canvas.style.width = `${Math.round(newWidth * this.canvasZoom)}px`;
             this.drawDemoCanvasGrid();
             ctx.drawImage(tempCanvas, 0, 0);
-            if (rawCtx && tempRaw.width > 0) {
-              rawCtx.drawImage(tempRaw, 0, 0);
-            }
+            tempCanvas.width = 1;
+            tempCanvas.height = 1;
           }
 
           if (hasLiveVideo) {
-            // Render vertical slit slice from live camera to canvas & clean rawSlitCanvas
+            // Render vertical slit slice from live camera to canvas
             ctx.drawImage(
               video,
               sourceX, 0, sliceW, vh,
               this.slitCurrentX, 0, sliceW, canvas.height
             );
-            if (rawCtx) {
-              rawCtx.drawImage(
-                video,
-                sourceX, 0, sliceW, vh,
-                this.slitCurrentX, 0, sliceW, canvas.height
-              );
-            }
           } else {
             // Fallback synthetic track slice when testing without camera hardware
             const laneH = canvas.height / 6;
@@ -644,18 +665,10 @@ class ProFinishApp {
               const bgFill = (i % 2 === 0) ? '#1e293b' : '#0f172a';
               ctx.fillStyle = bgFill;
               ctx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
-              if (rawCtx) {
-                rawCtx.fillStyle = bgFill;
-                rawCtx.fillRect(this.slitCurrentX, i * laneH, sliceW, laneH);
-              }
               // Draw lane divider dot
               if (this.slitCurrentX % 8 < sliceW) {
                 ctx.fillStyle = 'rgba(255,255,255,0.22)';
                 ctx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
-                if (rawCtx) {
-                  rawCtx.fillStyle = 'rgba(255,255,255,0.22)';
-                  rawCtx.fillRect(this.slitCurrentX, (i + 1) * laneH - 1, sliceW, 1);
-                }
               }
               // Draw simulated runner torso crossing around 1.2s ~ 3.2s for camera-less testing
               const targetCrossSec = 1.2 + i * 0.32;
@@ -663,10 +676,6 @@ class ProFinishApp {
                 const centerY = (i + 0.5) * laneH;
                 ctx.fillStyle = vestColors[i];
                 ctx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
-                if (rawCtx) {
-                  rawCtx.fillStyle = vestColors[i];
-                  rawCtx.fillRect(this.slitCurrentX, centerY - laneH * 0.28, sliceW, laneH * 0.56);
-                }
               }
             }
           }
@@ -806,6 +815,7 @@ class ProFinishApp {
     // Initialize canvas dimensions and draw 6-lane background grid before race starts
     this.initSlitCanvasDimensions();
     this.drawDemoCanvasGrid();
+    this.renderLaneMarkersOverlay();
     if (this.dom.canvasViewport) {
       this.dom.canvasViewport.scrollLeft = 0;
     }
@@ -943,9 +953,11 @@ class ProFinishApp {
       heat.lanes.forEach(lane => {
         lane.rawTime = null;
         lane.officialTime = '';
+        lane.pixelX = null;
         lane.rank = '-';
       });
       this.renderLanesTable();
+      this.renderLaneMarkersOverlay();
     }
     if (this.dom.assignedCountBadge) {
       this.dom.assignedCountBadge.textContent = "已判讀 0/6";
@@ -1124,8 +1136,9 @@ class ProFinishApp {
       this.dom.zoomLevelDisplay.textContent = `${this.canvasZoom.toFixed(1)}x`;
     }
 
-    // Reposition cursor in zoomed layout
+    // Reposition cursor and lane marker pins in zoomed layout
     this.updateCursorPosition(this.currentCursorPixelX || 0, true);
+    this.renderLaneMarkersOverlay();
   }
 
   getPixelXForTime(targetSec) {
@@ -1165,60 +1178,55 @@ class ProFinishApp {
     return closest.x;
   }
 
-  redrawSlitCanvasWithOverlays() {
+  renderLaneMarkersOverlay() {
+    const overlay = this.dom.laneMarkersOverlay;
     const canvas = this.dom.slitCanvas;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    if (!overlay || !canvas) return;
 
-    if (this.rawSlitCanvas && this.rawSlitCanvas.width > 0 && this.rawSlitCanvas.height > 0) {
-      ctx.drawImage(this.rawSlitCanvas, 0, 0);
-    }
+    overlay.innerHTML = '';
+    overlay.style.width = `${Math.round(canvas.width * this.canvasZoom)}px`;
 
-    // Redraw subtle lane guides and time ticks along the top
-    const laneH = canvas.height / 6;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
-    ctx.lineWidth = 1;
-    for (let i = 1; i <= 6; i++) {
-      const y = i * laneH;
-      ctx.beginPath();
-      ctx.setLineDash([4, 4]);
-      ctx.moveTo(0, y);
-      ctx.lineTo(canvas.width, y);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    if (this.sliceIndex && this.sliceIndex.length > 1) {
-      for (let i = 1; i < this.sliceIndex.length; i++) {
-        const cur = this.sliceIndex[i];
-        const prev = this.sliceIndex[i - 1];
-        if (Math.floor(cur.timeSec * 2) > Math.floor(prev.timeSec * 2)) {
-          const halfSec = (Math.floor(cur.timeSec * 2) / 2).toFixed(1);
-          const isFullSec = halfSec.endsWith('.0');
-          ctx.fillStyle = isFullSec ? 'rgba(239, 68, 68, 0.95)' : 'rgba(250, 204, 21, 0.75)';
-          ctx.fillRect(cur.x, 0, 1.5, isFullSec ? 24 : 14);
-          ctx.fillStyle = '#ffffff';
-          ctx.font = isFullSec ? 'bold 12px monospace' : '10px monospace';
-          ctx.fillText(`${halfSec}s`, cur.x + 3, isFullSec ? 16 : 12);
-        }
-      }
-    }
-
-    // Redraw left-edge lane badges
-    this.drawLaneBadgesOverlay();
-
-    // Redraw all currently assigned lane markers
     const heat = this.heatData[this.currentHeat];
-    if (heat && Array.isArray(heat.lanes)) {
-      heat.lanes.forEach(l => {
-        if (l.officialTime) {
-          const px = (typeof l.pixelX === 'number' && l.pixelX > 0)
-            ? l.pixelX
-            : this.getPixelXForTime(l.rawTime || parseFloat(l.officialTime));
-          this.drawLaneMarkerOnCanvas(l.lane, `${l.officialTime}s`, px);
-        }
-      });
-    }
+    if (!heat || !Array.isArray(heat.lanes)) return;
+
+    const colors = ['#dc2626', '#2563eb', '#eab308', '#9333ea', '#f97316', '#16a34a'];
+    const colorNames = ['紅', '藍', '黃', '紫', '橘', '綠'];
+
+    heat.lanes.forEach(l => {
+      if (!l.officialTime && !(typeof l.rawTime === 'number' && l.rawTime > 0)) return;
+      const px = (typeof l.pixelX === 'number' && l.pixelX > 0)
+        ? l.pixelX
+        : this.getPixelXForTime(l.rawTime || parseFloat(l.officialTime));
+      const cssX = Math.round(px * this.canvasZoom);
+
+      const color = colors[(l.lane - 1) % colors.length];
+      const colorName = colorNames[(l.lane - 1) % colorNames.length] || '';
+      const rowIndex = 6 - l.lane; // Row 0 (top) = 6道, Row 5 (bottom) = 1道
+      const topPct = ((rowIndex + 0.5) / 6) * 100;
+      const textColor = (l.lane === 3) ? '#000000' : '#ffffff';
+      const rankTag = (l.rank && l.rank !== '-') ? `[${l.rank}名] ` : '';
+      const labelStr = `${rankTag}${l.lane}道(${colorName}) ${l.officialTime}s`;
+
+      const pin = document.createElement('div');
+      pin.className = 'absolute top-0 bottom-0 pointer-events-none';
+      pin.style.left = `${cssX}px`;
+      pin.style.width = '2px';
+      pin.style.backgroundColor = color;
+
+      const badge = document.createElement('div');
+      badge.className = 'absolute left-1 -translate-y-1/2 px-1.5 py-0.5 rounded text-[11px] font-bold whitespace-nowrap shadow-md';
+      badge.style.top = `${topPct}%`;
+      badge.style.backgroundColor = color;
+      badge.style.color = textColor;
+      badge.textContent = labelStr;
+
+      pin.appendChild(badge);
+      overlay.appendChild(pin);
+    });
+  }
+
+  redrawSlitCanvasWithOverlays() {
+    this.renderLaneMarkersOverlay();
   }
 
   assignTimeToLane(laneNum) {
@@ -1455,6 +1463,10 @@ class ProFinishApp {
   bindPeerKeepAliveEvents() {
     const checkAndHealConnection = () => {
       if (document.visibilityState === 'hidden') return;
+      // 0. Heal Finish Host Camera Stream if mobile OS paused/muted/dropped it during file save or backgrounding
+      if (this.role === 'finish') {
+        this.ensureCameraAlive();
+      }
       // 1. Heal Finish Host signaling server connection if disconnected
       if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
         try {
@@ -1475,6 +1487,7 @@ class ProFinishApp {
 
     document.addEventListener('visibilitychange', checkAndHealConnection);
     window.addEventListener('focus', checkAndHealConnection);
+    window.addEventListener('pageshow', checkAndHealConnection);
     window.addEventListener('online', checkAndHealConnection);
   }
 
@@ -2425,6 +2438,7 @@ class ProFinishApp {
 
     this.recalculateRanks();
     this.renderLanesTable();
+    this.renderLaneMarkersOverlay();
     this.updateHudBadge();
     if (this.sliceIndex.length === 0) {
       this.drawDemoCanvasGrid();
@@ -2515,6 +2529,9 @@ class ProFinishApp {
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
+    // Immediately schedule camera wake-up in case mobile browser paused <video> on download click
+    setTimeout(() => this.ensureCameraAlive(), 300);
+    setTimeout(() => this.ensureCameraAlive(), 1200);
     // Delay revoking URL so mobile/desktop browser download stream does not abort or trigger page unload
     setTimeout(() => {
       if (a.parentNode) a.parentNode.removeChild(a);
@@ -2626,13 +2643,14 @@ class ProFinishApp {
     const availEndX = Math.min(srcCanvas.width, Math.max(cropStartX + 1, desiredEndX));
     const availCropWidth = Math.max(1, availEndX - cropStartX);
 
-    // 3. Configure 8x horizontal magnification (with iOS Safari 16MP canvas safety guard)
+    // 3. Configure 8x horizontal magnification (with lightweight GPU memory budget so iOS Safari never drops <video>)
     const TARGET_ZOOM_X = 8.0;
-    const trackHeight = srcCanvas.height || 720;
+    const srcTrackHeight = srcCanvas.height || 720;
+    const trackHeight = Math.min(720, srcTrackHeight);
     const headerHeight = 96;
     const footerHeight = 136;
     const totalHeight = trackHeight + headerHeight + footerHeight;
-    const maxSafeCanvasWidth = Math.min(14000, Math.floor(15500000 / totalHeight));
+    const maxSafeCanvasWidth = 4096;
     const zoomedTrackWidth = Math.min(maxSafeCanvasWidth, Math.round(fullSpanPx * TARGET_ZOOM_X));
     const effectiveZoomX = zoomedTrackWidth / fullSpanPx;
 
@@ -2670,18 +2688,15 @@ class ProFinishApp {
       ctx.fillRect(0, headerHeight + i * laneH, expCanvas.width, laneH);
     }
 
-    // 4. Draw cropped slit-scan imagery stretched 8x horizontally from clean rawSlitCanvas
-    const cleanSource = (this.rawSlitCanvas && this.rawSlitCanvas.width > 10 && this.rawSlitCanvas.height > 10)
-      ? this.rawSlitCanvas
-      : srcCanvas;
+    // 4. Draw cropped slit-scan imagery stretched 8x horizontally directly from clean slitCanvas
     const drawnZoomedWidth = Math.round(availCropWidth * effectiveZoomX);
 
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(
-      cleanSource,
-      cropStartX, 0, availCropWidth, trackHeight,
+      srcCanvas,
+      cropStartX, 0, availCropWidth, srcTrackHeight,
       0, headerHeight, drawnZoomedWidth, trackHeight
     );
     ctx.restore();
@@ -2861,21 +2876,25 @@ class ProFinishApp {
 
     // Download PNG locally using async toBlob (non-blocking to preserve WebRTC P2P connection)
     expCanvas.toBlob((blob) => {
+      let proofDataUrl = null;
+      try {
+        proofDataUrl = expCanvas.toDataURL('image/jpeg', 0.80);
+      } catch (e) {}
+      // Immediately release offscreen canvas GPU backing store so mobile WebKit never evicts <video> camera feed!
+      expCanvas.width = 1;
+      expCanvas.height = 1;
+
       this.triggerSafeBlobDownload(blob, fileName);
       this.showToast(
         `📸 已儲存 8x 放大壓線證明圖 (${cropStartTime.toFixed(1)}s~${cropEndTime.toFixed(1)}s)！`,
         'success'
       );
 
-      // Silently upload lightweight JPEG proof to PC backend in background without blocking main thread
-      setTimeout(() => {
-        try {
-          const proofDataUrl = expCanvas.toDataURL('image/jpeg', 0.82);
+      if (proofDataUrl) {
+        setTimeout(() => {
           this.syncCurrentHeatToBackend(false, proofDataUrl);
-        } catch (e) {
-          console.warn('Proof sync skipped:', e);
-        }
-      }, 350);
+        }, 350);
+      }
     }, 'image/png');
   }
 
@@ -3043,8 +3062,11 @@ class ProFinishApp {
     if (!proofImage && withToast && this.dom.slitCanvas && this.dom.slitCanvas.width > 10) {
       try {
         const built = this.buildPhotoFinishProofCanvas();
-        const targetCanvas = (built && built.expCanvas) ? built.expCanvas : this.dom.slitCanvas;
-        proofImage = targetCanvas.toDataURL('image/jpeg', 0.82);
+        if (built && built.expCanvas) {
+          proofImage = built.expCanvas.toDataURL('image/jpeg', 0.80);
+          built.expCanvas.width = 1;
+          built.expCanvas.height = 1;
+        }
       } catch (e) {}
     }
 

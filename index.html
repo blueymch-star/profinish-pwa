@@ -353,7 +353,7 @@
 
 
     <!-- ================= COLLAPSIBLE DRAWER 2: 終點掃描畫卷與判讀工作台 (收縮工作台) ================= -->
-    <div id="reviewDrawer" class="fixed inset-0 bg-slate-950/98 backdrop-blur-2xl z-40 flex flex-col shadow-2xl transition-transform duration-300 translate-y-full overflow-hidden">
+    <div id="reviewDrawer" class="fixed inset-0 bg-slate-950 z-40 flex flex-col shadow-2xl transition-transform duration-300 translate-y-full overflow-hidden">
       
       <!-- Review Header Bar with Back-to-Camera button -->
       <div class="flex-none bg-slate-900/95 border-b border-slate-800 px-3 py-2 flex flex-col gap-1.5 z-10" style="padding-top: max(calc(env(safe-area-inset-top, 0px) + 8px), 10px);">
@@ -398,6 +398,9 @@
       <!-- Interactive Slit-Scan Canvas Viewport -->
       <div id="canvasViewport" class="flex-1 relative overflow-auto bg-slate-950 cursor-crosshair select-none min-h-[200px]" style="touch-action: none;">
         <canvas id="slitCanvas" width="1600" height="720" class="h-full block" style="image-rendering: auto;"></canvas>
+
+        <!-- Assigned Lane Finish Markers Overlay (Crisp 1:1 DOM Pins, zero extra canvas memory) -->
+        <div id="laneMarkersOverlay" class="absolute inset-y-0 left-0 pointer-events-none z-10"></div>
 
         <!-- Vertical Scrubber Cursor Line (Yellow Crosshair Reticle) -->
         <div id="scrubberCursor" class="absolute top-0 bottom-0 w-0.5 bg-yellow-400 pointer-events-none z-20" style="left: 120px; box-shadow: 0 0 10px rgba(250, 204, 21, 0.9);">
@@ -618,6 +621,6 @@
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js?v=4.8"></script>
+  <script src="./app.js?v=4.9"></script>
 </body>
 </html>
