@@ -1,5 +1,5 @@
 // Service Worker for ProFinish PWA
-const CACHE_NAME = 'profinish-v4.5';
+const CACHE_NAME = 'profinish-v4.6';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -37,8 +37,14 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Pass-through for API endpoints, SSE streams, and non-GET requests
-  if (event.request.method !== 'GET' || event.request.url.includes('/api/')) return;
+  // Pass-through for API endpoints, SSE streams, blob downloads, external PeerJS signaling, and non-GET requests
+  if (
+    event.request.method !== 'GET' ||
+    !event.request.url.startsWith(self.location.origin) ||
+    event.request.url.includes('/api/')
+  ) {
+    return;
+  }
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {

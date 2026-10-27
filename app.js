@@ -43,7 +43,11 @@ class ProFinishApp {
     // PeerJS & PTP-Lite Sync State
     this.roomCode = '2026';
     this.peer = null;
+    this.senderPeer = null;
     this.peerConnection = null;
+    this.shouldStayConnected = false;
+    this.targetRoomCode = '';
+    this.reconnectTimer = null;
     this.ptpSamples = []; // Array of { rtt, offset }
     this.clockOffset = 0; // StartSender time + clockOffset = FinishHost time
     this.meanRtt = 0;
@@ -83,6 +87,7 @@ class ProFinishApp {
 
     // Initialize PeerJS for P2P Wireless Sync
     this.initFinishHostPeer();
+    this.bindPeerKeepAliveEvents();
 
     // Attach Event Listeners for Touch/Scrubbing
     this.bindCanvasScrubberEvents();
@@ -1145,6 +1150,32 @@ class ProFinishApp {
   /* WEBRTC P2P & PTP-LITE CLOCK SYNCHRONIZATION                                */
   /* ========================================================================== */
 
+  bindPeerKeepAliveEvents() {
+    const checkAndHealConnection = () => {
+      if (document.visibilityState === 'hidden') return;
+      // 1. Heal Finish Host signaling server connection if disconnected
+      if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+        try {
+          console.log('[PeerJS] Healing Finish Host signaling connection...');
+          this.peer.reconnect();
+        } catch (e) {}
+      }
+      // 2. Heal Start Sender connection if paired & interrupted (e.g. after saving photo)
+      if (this.role === 'start' && this.shouldStayConnected && this.targetRoomCode) {
+        if (this.senderPeer && !this.senderPeer.destroyed && this.senderPeer.disconnected) {
+          try { this.senderPeer.reconnect(); } catch (e) {}
+        }
+        if (!this.peerConnection || !this.peerConnection.open) {
+          this.scheduleSenderReconnect(300);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', checkAndHealConnection);
+    window.addEventListener('focus', checkAndHealConnection);
+    window.addEventListener('online', checkAndHealConnection);
+  }
+
   initFinishHostPeer() {
     // Create Peer with designated room ID: profinish-heat-${roomCode}
     const peerId = `profinish-heat-${this.roomCode}`;
@@ -1155,8 +1186,13 @@ class ProFinishApp {
         return;
       }
 
+      if (this.peer && !this.peer.destroyed) {
+        try { this.peer.destroy(); } catch (e) {}
+      }
+
       this.peer = new Peer(peerId, {
         debug: 1,
+        pingInterval: 5000,
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -1167,73 +1203,200 @@ class ProFinishApp {
 
       this.peer.on('open', (id) => {
         console.log('[PeerJS] Finish Host listening on room peer ID:', id);
-        this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
+        if (this.peerConnection && this.peerConnection.open) {
+          this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
+        } else {
+          this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
+        }
       });
 
       this.peer.on('connection', (conn) => {
         console.log('[PeerJS] Start Sender connected!');
+        if (this.peerConnection && this.peerConnection !== conn) {
+          try { this.peerConnection.close(); } catch (e) {}
+        }
         this.peerConnection = conn;
         this.setupDataChannel(conn, 'host');
       });
 
+      this.peer.on('disconnected', () => {
+        console.warn('[PeerJS] Finish Host signaling socket disconnected, auto-reconnecting...');
+        setTimeout(() => {
+          if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+            try { this.peer.reconnect(); } catch (e) {}
+          }
+        }, 1000);
+      });
+
       this.peer.on('error', (err) => {
-        console.warn('[PeerJS] Peer error (fallback to single phone):', err);
-        this.updateSyncBadge('offline', '單機模式 (聲速補償)');
+        console.warn('[PeerJS] Peer error:', err.type || err);
+        // If P2P DataChannel with Start Sender is still open, never downgrade status!
+        if (this.peerConnection && this.peerConnection.open) {
+          if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+            setTimeout(() => {
+              try { this.peer.reconnect(); } catch (e) {}
+            }, 1500);
+          }
+          return;
+        }
+
+        if (err && err.type === 'unavailable-id') {
+          setTimeout(() => this.initFinishHostPeer(), 2000);
+          return;
+        }
+
+        if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+          setTimeout(() => {
+            try { this.peer.reconnect(); } catch (e) {}
+          }, 1500);
+        } else {
+          this.updateSyncBadge('offline', '單機模式 (聲速補償)');
+        }
       });
     } catch (e) {
       console.warn('PeerJS init failed:', e);
     }
   }
 
-  connectToFinishHost() {
-    const targetCode = this.dom.inputRoomCode.value.trim();
+  connectToFinishHost(isAutoReconnect = false) {
+    const targetCode = (this.dom.inputRoomCode && this.dom.inputRoomCode.value.trim()) || this.targetRoomCode;
     if (!targetCode || targetCode.length < 3) {
-      alert('請輸入有效的 4 位數配對碼！');
+      if (!isAutoReconnect) this.showToast('請輸入有效的 4 位數配對碼！', 'warn');
       return;
     }
 
-    this.dom.btnConnectHost.textContent = '連線中...';
-    this.dom.btnConnectHost.disabled = true;
+    this.targetRoomCode = targetCode;
+    this.shouldStayConnected = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (!isAutoReconnect && this.dom.btnConnectHost) {
+      this.dom.btnConnectHost.textContent = '連線中...';
+      this.dom.btnConnectHost.disabled = true;
+    }
+
+    const connectDataChannel = (peerInstance) => {
+      const hostPeerId = `profinish-heat-${targetCode}`;
+      console.log(`[PeerJS] Connecting to host: ${hostPeerId}`);
+      if (this.peerConnection && this.peerConnection.open) {
+        return;
+      }
+      const conn = peerInstance.connect(hostPeerId, { reliable: true });
+
+      conn.on('open', () => {
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.peerConnection = conn;
+        if (this.dom.btnConnectHost) {
+          this.dom.btnConnectHost.textContent = '已連線';
+          this.dom.btnConnectHost.disabled = false;
+          this.dom.btnConnectHost.className = "px-3 py-1.5 rounded-lg bg-emerald-600 font-bold text-xs text-white shadow";
+        }
+        this.setupDataChannel(conn, 'sender');
+      });
+
+      const handleDisconnect = () => {
+        if (this.peerConnection === conn) {
+          this.peerConnection = null;
+        }
+        if (this.shouldStayConnected) {
+          if (this.dom.senderSyncBadge) {
+            this.dom.senderSyncBadge.textContent = '🔄 訊號保持/重連中...';
+            this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800";
+          }
+          this.scheduleSenderReconnect(1200);
+        } else {
+          if (this.dom.btnConnectHost) {
+            this.dom.btnConnectHost.textContent = '連線';
+            this.dom.btnConnectHost.disabled = false;
+          }
+          if (this.dom.senderSyncBadge) {
+            this.dom.senderSyncBadge.textContent = '連線已中斷';
+            this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-red-400";
+          }
+        }
+      };
+
+      conn.on('close', handleDisconnect);
+      conn.on('error', handleDisconnect);
+    };
 
     try {
+      // Reuse existing open senderPeer if available
+      if (this.senderPeer && !this.senderPeer.destroyed) {
+        if (this.senderPeer.disconnected) {
+          this.senderPeer.reconnect();
+        } else if (this.senderPeer.open) {
+          connectDataChannel(this.senderPeer);
+          return;
+        }
+      }
+
+      if (this.senderPeer && !this.senderPeer.destroyed) {
+        try { this.senderPeer.destroy(); } catch (e) {}
+      }
+
       // Create sender peer with random ID
-      const senderPeerId = `profinish-sender-${Date.now().toString(36)}`;
+      const senderPeerId = `profinish-sender-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
       const senderPeer = new Peer(senderPeerId, {
         debug: 1,
+        pingInterval: 5000,
         config: {
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        }
+      });
+      this.senderPeer = senderPeer;
+
+      senderPeer.on('open', () => {
+        connectDataChannel(senderPeer);
+      });
+
+      senderPeer.on('disconnected', () => {
+        if (this.senderPeer === senderPeer && !senderPeer.destroyed) {
+          setTimeout(() => {
+            try { senderPeer.reconnect(); } catch (e) {}
+          }, 800);
         }
       });
 
-      senderPeer.on('open', () => {
-        const hostPeerId = `profinish-heat-${targetCode}`;
-        console.log(`[PeerJS] Connecting to host: ${hostPeerId}`);
-        const conn = senderPeer.connect(hostPeerId, { reliable: true });
-
-        conn.on('open', () => {
-          this.peerConnection = conn;
-          this.dom.btnConnectHost.textContent = '已連線';
-          this.dom.btnConnectHost.className = "px-3 py-1.5 rounded-lg bg-emerald-600 font-bold text-xs text-white shadow";
-          this.setupDataChannel(conn, 'sender');
-        });
-
-        conn.on('close', () => {
-          this.dom.btnConnectHost.textContent = '連線';
-          this.dom.btnConnectHost.disabled = false;
-          this.dom.senderSyncBadge.textContent = '連線已中斷';
-          this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-red-400";
-        });
-      });
-
       senderPeer.on('error', (err) => {
-        alert('配對失敗：找不到該代碼之終點機，請確認兩機輸入相同代碼或已連上相同 Wi-Fi / 熱點。');
-        this.dom.btnConnectHost.textContent = '連線';
-        this.dom.btnConnectHost.disabled = false;
+        console.warn('[PeerJS] Sender peer error:', err.type || err);
+        if (this.peerConnection && this.peerConnection.open) return;
+
+        if (this.shouldStayConnected) {
+          this.scheduleSenderReconnect(1500);
+        } else {
+          this.showToast('配對失敗：找不到該代碼之終點機，請確認代碼或網路連線', 'warn');
+          if (this.dom.btnConnectHost) {
+            this.dom.btnConnectHost.textContent = '連線';
+            this.dom.btnConnectHost.disabled = false;
+          }
+        }
       });
     } catch (err) {
-      alert('WebRTC 連線異常: ' + err.message);
-      this.dom.btnConnectHost.disabled = false;
+      if (!isAutoReconnect) {
+        this.showToast('WebRTC 連線異常: ' + err.message, 'warn');
+      }
+      if (this.dom.btnConnectHost) this.dom.btnConnectHost.disabled = false;
     }
+  }
+
+  scheduleSenderReconnect(delayMs = 1500) {
+    if (!this.shouldStayConnected || !this.targetRoomCode) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.shouldStayConnected && (!this.peerConnection || !this.peerConnection.open)) {
+        this.connectToFinishHost(true);
+      }
+    }, delayMs);
   }
 
   setupDataChannel(conn, roleType) {
@@ -1250,6 +1413,18 @@ class ProFinishApp {
       this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
       conn.send({ type: 'arm_status', isArmed: this.isArmed });
       conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
+
+      const onHostConnClosed = () => {
+        if (this.peerConnection === conn) {
+          this.peerConnection = null;
+          this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
+        }
+        if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+          try { this.peer.reconnect(); } catch (e) {}
+        }
+      };
+      conn.on('close', onHostConnClosed);
+      conn.on('error', onHostConnClosed);
     }
   }
 
@@ -1257,10 +1432,14 @@ class ProFinishApp {
     if (this.ptpTimer) clearInterval(this.ptpTimer);
     this.ptpTimer = setInterval(() => {
       if (conn && conn.open) {
-        conn.send({
-          type: 'ptp_ping',
-          t1: performance.now()
-        });
+        try {
+          conn.send({
+            type: 'ptp_ping',
+            t1: performance.now()
+          });
+        } catch (e) {}
+      } else if (this.role === 'start' && this.shouldStayConnected) {
+        this.scheduleSenderReconnect(800);
       }
     }, 500);
   }
@@ -2024,6 +2203,23 @@ class ProFinishApp {
     this.dom.csvImportModal.classList.add('hidden');
   }
 
+  triggerSafeBlobDownload(blob, fileName) {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = fileName;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    // Delay revoking URL so mobile/desktop browser download stream does not abort or trigger page unload
+    setTimeout(() => {
+      if (a.parentNode) a.parentNode.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 15000);
+  }
+
   downloadSampleCsv() {
     const csvContent = "\uFEFF組別,項目,道次,班級,姓名,號碼衣\n" +
       "1,100m,1,六年一班,陳小明,紅\n" +
@@ -2034,12 +2230,7 @@ class ProFinishApp {
       "1,100m,6,六年六班,王俊傑,綠\n";
     
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = "profinish_sample_roster.csv";
-    a.click();
-    URL.revokeObjectURL(url);
+    this.triggerSafeBlobDownload(blob, "profinish_sample_roster.csv");
   }
 
   handleCsvFile(e) {
@@ -2068,7 +2259,7 @@ class ProFinishApp {
 
       this.renderLanesTable();
       this.closeCsvModal();
-      alert('道次學生名單已成功匯入！');
+      this.showToast('✅ 道次學生名單已成功匯入！', 'success');
     };
     reader.readAsText(file);
   }
@@ -2085,18 +2276,14 @@ class ProFinishApp {
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ProFinish_第${heatId}組_${eventTitle}_成績總表.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    this.triggerSafeBlobDownload(blob, `ProFinish_第${heatId}組_${eventTitle}_成績總表.csv`);
+    this.showToast(`📊 第 ${heatId} 組 CSV 成績單已匯出`, 'success');
   }
 
   exportPhotoFinishProof() {
     const srcCanvas = this.dom.slitCanvas;
-    if (srcCanvas.width <= 10) {
-      alert('尚未有終點影像可匯出！');
+    if (!srcCanvas || srcCanvas.width <= 10) {
+      this.showToast('尚未有終點影像可匯出！', 'warn');
       return;
     }
 
@@ -2104,7 +2291,7 @@ class ProFinishApp {
     const heatId = (heat && heat.id) ? heat.id : this.currentHeat;
     const eventTitle = (heat && heat.eventTitle) ? heat.eventTitle : `${this.currentDistance} 公尺`;
     
-    // Create high-res composite export canvas
+    // Create composite export canvas
     const expCanvas = document.createElement('canvas');
     const headerHeight = 90;
     const footerHeight = 120;
@@ -2143,32 +2330,34 @@ class ProFinishApp {
     ctx.fillText('官方判定成績：', 25, tableTop + 16);
 
     let colX = 130;
-    heat.lanes.forEach(l => {
-      if (l.officialTime) {
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 12px monospace';
-        const vestLabel = l.bib ? `(${l.bib})` : '';
-        ctx.fillText(`[${l.rank}名] ${l.lane}道${vestLabel} ${l.name} (${l.grade}) - ${l.officialTime}s`, colX, tableTop + 16);
-        colX += 240;
-      }
-    });
-
-    // Also upload composite proof image & results to PC Backend automatically
-    try {
-      const proofDataUrl = expCanvas.toDataURL('image/png');
-      this.syncCurrentHeatToBackend(true, proofDataUrl);
-    } catch (e) {
-      console.warn('Proof sync skipped:', e);
+    if (heat && Array.isArray(heat.lanes)) {
+      heat.lanes.forEach(l => {
+        if (l.officialTime) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = 'bold 12px monospace';
+          const vestLabel = l.bib ? `(${l.bib})` : '';
+          ctx.fillText(`[${l.rank}名] ${l.lane}道${vestLabel} ${l.name} (${l.grade}) - ${l.officialTime}s`, colX, tableTop + 16);
+          colX += 240;
+        }
+      });
     }
 
-    // Download PNG locally
+    const fileName = `ProFinish_第${heatId}組_${eventTitle}_壓線判定圖.png`;
+
+    // Download PNG locally using async toBlob (non-blocking to preserve WebRTC P2P connection)
     expCanvas.toBlob((blob) => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `ProFinish_第${heatId}組_${eventTitle}_壓線判定圖.png`;
-      a.click();
-      URL.revokeObjectURL(url);
+      this.triggerSafeBlobDownload(blob, fileName);
+      this.showToast(`📸 第 ${heatId} 組壓線證明圖已儲存！`, 'success');
+
+      // Silently upload lightweight JPEG proof to PC backend in background without blocking main thread
+      setTimeout(() => {
+        try {
+          const proofDataUrl = expCanvas.toDataURL('image/jpeg', 0.82);
+          this.syncCurrentHeatToBackend(false, proofDataUrl);
+        } catch (e) {
+          console.warn('Proof sync skipped:', e);
+        }
+      }, 350);
     }, 'image/png');
   }
 
@@ -2318,13 +2507,15 @@ class ProFinishApp {
     const heat = this.heatData[this.currentHeat];
     if (!heat) return;
 
-    // 1. Always update local storage cache immediately so results are never lost
+    // 1. Always update local storage cache immediately so results are never lost (without heavy base64 images)
     try {
       const cached = JSON.parse(localStorage.getItem('profinish_meet_cache') || 'null');
       if (cached && Array.isArray(cached.heats)) {
         const idx = cached.heats.findIndex(h => String(h.uid || h.id) === String(heat.uid || heat.id));
         if (idx !== -1) {
-          cached.heats[idx] = { ...cached.heats[idx], ...heat };
+          const { proofImage: _omit, ...lightHeat } = heat;
+          cached.heats[idx] = { ...cached.heats[idx], ...lightHeat };
+          delete cached.heats[idx].proofImage;
         }
         localStorage.setItem('profinish_meet_cache', JSON.stringify(cached));
       }
@@ -2333,7 +2524,7 @@ class ProFinishApp {
     let proofImage = customProofDataUrl;
     if (!proofImage && withToast && this.dom.slitCanvas && this.dom.slitCanvas.width > 10) {
       try {
-        proofImage = this.dom.slitCanvas.toDataURL('image/png');
+        proofImage = this.dom.slitCanvas.toDataURL('image/jpeg', 0.82);
       } catch (e) {}
     }
 
@@ -2366,12 +2557,12 @@ class ProFinishApp {
         })
       });
       if (res.ok && withToast) {
-        alert(`☁️ 已成功將「第 ${heat.id || this.currentHeat} 組」成績與壓線圖同步回傳至電腦後台！`);
+        this.showToast(`☁️ 已成功將「第 ${heat.id || this.currentHeat} 組」成績與壓線圖同步至電腦後台！`, 'success');
       } else if (!res.ok && withToast) {
         if (isStaticHost) {
           this.showGitHubSyncModal(heat);
         } else {
-          alert('同步至電腦後台失敗，請確認後台伺服器是否有啟動。');
+          this.showToast('⚠️ 同步至電腦後台失敗，本組成績已安全保存在本機', 'warn');
         }
       }
     } catch (err) {
@@ -2379,7 +2570,7 @@ class ProFinishApp {
         if (isStaticHost) {
           this.showGitHubSyncModal(heat);
         } else {
-          alert('同步至電腦後台失敗，請確認網路連線或伺服器是否開啟。');
+          this.showToast('⚠️ 無法連線電腦後台，本組成績已安全保存在本機', 'warn');
         }
       }
     }
