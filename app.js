@@ -33,7 +33,11 @@ class ProFinishApp {
     this.cameraStream = null;
     this.selectedCameraId = '';
     this.torchEnabled = false;
-    this.zeroOffsetMs = parseFloat(localStorage.getItem('profinish_zero_offset') || '0');
+    const savedZero = parseFloat(localStorage.getItem('profinish_zero_offset') || '0');
+    this.zeroOffsetMs = (isFinite(savedZero) && Math.abs(savedZero) <= 150) ? savedZero : 0;
+    if (this.zeroOffsetMs !== savedZero) {
+      localStorage.setItem('profinish_zero_offset', '0');
+    }
 
     // Time Slice Data for current heat
     // Array of: { x: pixelOffset, timeSec: relativeSeconds }
@@ -48,6 +52,13 @@ class ProFinishApp {
     this.shouldStayConnected = false;
     this.targetRoomCode = '';
     this.reconnectTimer = null;
+    this.hostKeepAliveTimer = null;
+    this.lastPongTime = 0;
+    this.lastPeerActivityTime = 0;
+    this.pendingStartTrigger = null;
+    this._lastHandledTriggerId = null;
+    this._ackedTriggerId = null;
+    this._isDownloadingBlob = false;
     this.ptpSamples = []; // Array of { rtt, offset }
     this.clockOffset = 0; // StartSender time + clockOffset = FinishHost time
     this.meanRtt = 0;
@@ -782,38 +793,70 @@ class ProFinishApp {
       return;
     }
 
-    let effectiveStartTime = (typeof eventData.timestamp === 'number') ? eventData.timestamp : performance.now();
+    // Immediately close reviewDrawer / toolsDrawer / modals so the live camera & stopwatch are visible right away!
+    if (this.dom.reviewDrawer && !this.dom.reviewDrawer.classList.contains('translate-y-full')) {
+      this.dom.reviewDrawer.classList.add('translate-y-full');
+    }
+    if (this.dom.toolsDrawer && !this.dom.toolsDrawer.classList.contains('translate-x-full')) {
+      this.dom.toolsDrawer.classList.add('translate-x-full');
+    }
+    const ghModal = document.getElementById('ghSyncModal');
+    if (ghModal) ghModal.classList.add('hidden');
+
+    const hostNow = performance.now();
+    let effectiveStartTime = (typeof eventData.timestamp === 'number') ? eventData.timestamp : hostNow;
 
     // Sanity check: Clamping to prevent cross-device performance.now() epoch mismatch
-    const hostNow = performance.now();
-    if (effectiveStartTime > hostNow + 250 || (hostNow - effectiveStartTime) > 2000) {
-      console.warn(`[Timing] effectiveStartTime was out of bounds (${effectiveStartTime.toFixed(1)} vs hostNow ${hostNow.toFixed(1)}), clamping to hostNow`);
+    if (effectiveStartTime > hostNow + 250 || (hostNow - effectiveStartTime) > 5000) {
+      console.warn(`[Timing] effectiveStartTime out of bounds (${effectiveStartTime.toFixed(1)} vs hostNow ${hostNow.toFixed(1)}), clamping`);
       effectiveStartTime = hostNow - 5;
     }
 
-    // Apply user-calibrated Zero Offset (IAAF Zero Control compensation, e.g. camera buffer delay)
-    if (this.zeroOffsetMs) {
+    // Apply user-calibrated Zero Offset (clamped to ±150ms so it never freezes the stopwatch)
+    if (this.zeroOffsetMs && Math.abs(this.zeroOffsetMs) <= 150) {
       effectiveStartTime += this.zeroOffsetMs;
-      console.log(`[ZeroOffset] Applied offset: ${(this.zeroOffsetMs / 1000).toFixed(3)}s`);
     }
 
     // If triggered by single-phone acoustic gun sound detection, apply sound speed deduction
     if (eventData.source === 'single_acoustic' && this.enableSoundComp) {
       const deductSec = this.calculateSoundDelay();
       effectiveStartTime -= deductSec * 1000;
-      console.log(`[SoundComp] Single-phone acoustic delay deducted: ${deductSec.toFixed(3)}s`);
     }
 
-    // Ensure camera video is playing (in case iOS Safari paused it during background/audio)
-    if (this.dom.cameraVideo && this.dom.cameraVideo.paused && this.cameraStream) {
-      this.dom.cameraVideo.play().catch(() => {});
+    // Never allow effectiveStartTime to be in the future (guarantees stopwatch ticks upward immediately at 0ms!)
+    const nowAfterCalc = performance.now();
+    if (effectiveStartTime > nowAfterCalc - 2) {
+      effectiveStartTime = nowAfterCalc - 5;
     }
 
-    this.sliceIndex = []; // Clear current heat slices
-    this.slitCurrentX = 0; // Reset canvas slice write head
+    // 1. IMMEDIATELY start stopwatch state & update display before any canvas work!
+    this.raceStartTime = effectiveStartTime;
+    this.raceState = 'running';
+    if (this.dom.liveClockDisplay) {
+      const initElapsed = Math.max(0.01, (performance.now() - this.raceStartTime) / 1000);
+      const secs = Math.floor(initElapsed % 60);
+      const centis = Math.floor((initElapsed % 1) * 100);
+      this.dom.liveClockDisplay.textContent = `00:${String(secs).padStart(2, '0')}.${String(centis).padStart(2, '0')}`;
+    }
+    this.updateTriggerButtonState();
 
-    // Initialize canvas dimensions and draw 6-lane background grid before race starts
-    this.initSlitCanvasDimensions();
+    if (this.dom.scanStatusBadge) {
+      this.dom.scanStatusBadge.textContent = "⚡ 高速掃描寫入中...";
+      this.dom.scanStatusBadge.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-950/80 text-red-400 border border-red-800 animate-pulse";
+    }
+
+    // Ensure camera video is playing
+    this.ensureCameraAlive();
+
+    // 2. Reset slice state and compact canvas width for the new race
+    this.sliceIndex = [];
+    this.slitCurrentX = 0;
+    if (this.dom.slitCanvas) {
+      const targetW = Math.max(1600, window.innerWidth * 2);
+      if (this.dom.slitCanvas.width !== targetW) {
+        this.dom.slitCanvas.width = targetW;
+      }
+    }
     this.drawDemoCanvasGrid();
     this.renderLaneMarkersOverlay();
     if (this.dom.canvasViewport) {
@@ -823,20 +866,11 @@ class ProFinishApp {
       this.dom.canvasEmptyPrompt.classList.add('hidden');
     }
 
-    this.raceStartTime = effectiveStartTime;
-    this.raceState = 'running';
-
-    if (this.dom.scanStatusBadge) {
-      this.dom.scanStatusBadge.textContent = "⚡ 高速掃描寫入中...";
-      this.dom.scanStatusBadge.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-red-950/80 text-red-400 border border-red-800 animate-pulse";
-    }
-
-    // Update bottom trigger button to red STOP button
-    this.updateTriggerButtonState();
-
-    // Play alert sound & haptic vibration
-    this.playGunshotAudio();
-    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    // Play alert sound & haptic vibration asynchronously
+    setTimeout(() => {
+      this.playGunshotAudio();
+      if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+    }, 0);
   }
 
   toggleStartOrStop() {
@@ -1461,26 +1495,31 @@ class ProFinishApp {
   /* ========================================================================== */
 
   bindPeerKeepAliveEvents() {
+    // Prevent PeerJS internal window 'beforeunload'/'unload'/'pagehide' listeners from destroying
+    // the WebRTC P2P connection when clicking <a download> to save proof images or CSVs!
+    const blockUnloadDuringDownload = (e) => {
+      if (this._isDownloadingBlob) {
+        e.stopImmediatePropagation();
+      }
+    };
+    window.addEventListener('beforeunload', blockUnloadDuringDownload, true);
+    window.addEventListener('unload', blockUnloadDuringDownload, true);
+    window.addEventListener('pagehide', blockUnloadDuringDownload, true);
+
     const checkAndHealConnection = () => {
       if (document.visibilityState === 'hidden') return;
-      // 0. Heal Finish Host Camera Stream if mobile OS paused/muted/dropped it during file save or backgrounding
+      // 0. Heal Finish Host Camera Stream & PeerJS signaling if mobile OS paused/suspended during file save
       if (this.role === 'finish') {
         this.ensureCameraAlive();
+        this.ensureFinishHostPeerAlive();
       }
-      // 1. Heal Finish Host signaling server connection if disconnected
-      if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
-        try {
-          console.log('[PeerJS] Healing Finish Host signaling connection...');
-          this.peer.reconnect();
-        } catch (e) {}
-      }
-      // 2. Heal Start Sender connection if paired & interrupted (e.g. after saving photo)
+      // 1. Heal Start Sender connection if paired & interrupted (e.g. after saving photo)
       if (this.role === 'start' && this.shouldStayConnected && this.targetRoomCode) {
         if (this.senderPeer && !this.senderPeer.destroyed && this.senderPeer.disconnected) {
           try { this.senderPeer.reconnect(); } catch (e) {}
         }
-        if (!this.peerConnection || !this.peerConnection.open) {
-          this.scheduleSenderReconnect(300);
+        if (!this.isDataChannelReady(this.peerConnection)) {
+          this.scheduleSenderReconnect(150);
         }
       }
     };
@@ -1489,6 +1528,50 @@ class ProFinishApp {
     window.addEventListener('focus', checkAndHealConnection);
     window.addEventListener('pageshow', checkAndHealConnection);
     window.addEventListener('online', checkAndHealConnection);
+
+    // Periodic Finish Host watchdog to keep signaling & WebRTC alive across native file save dialogs
+    if (this.hostKeepAliveTimer) clearInterval(this.hostKeepAliveTimer);
+    this.hostKeepAliveTimer = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      if (this.role === 'finish') {
+        this.ensureFinishHostPeerAlive();
+      }
+    }, 1500);
+  }
+
+  isDataChannelReady(conn) {
+    if (!conn || !conn.open) return false;
+    if (conn.dataChannel && conn.dataChannel.readyState && conn.dataChannel.readyState !== 'open') {
+      return false;
+    }
+    if (conn.peerConnection && conn.peerConnection.iceConnectionState) {
+      const ice = conn.peerConnection.iceConnectionState;
+      if (ice === 'disconnected' || ice === 'failed' || ice === 'closed') {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  ensureFinishHostPeerAlive() {
+    if (this.role !== 'finish') return;
+    if (!this.peer || this.peer.destroyed) {
+      this.initFinishHostPeer();
+      return;
+    }
+    if (this.peer.disconnected) {
+      try {
+        this.peer.reconnect();
+      } catch (e) {
+        this.initFinishHostPeer();
+      }
+    }
+    // Check if existing DataChannel silently died during OS file dialog
+    if (this.peerConnection && !this.isDataChannelReady(this.peerConnection)) {
+      try { this.peerConnection.close(); } catch (e) {}
+      this.peerConnection = null;
+      this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
+    }
   }
 
   initFinishHostPeer() {
@@ -1518,7 +1601,7 @@ class ProFinishApp {
 
       this.peer.on('open', (id) => {
         console.log('[PeerJS] Finish Host listening on room peer ID:', id);
-        if (this.peerConnection && this.peerConnection.open) {
+        if (this.isDataChannelReady(this.peerConnection)) {
           this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
         } else {
           this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
@@ -1540,30 +1623,30 @@ class ProFinishApp {
           if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
             try { this.peer.reconnect(); } catch (e) {}
           }
-        }, 1000);
+        }, 400);
       });
 
       this.peer.on('error', (err) => {
         console.warn('[PeerJS] Peer error:', err.type || err);
         // If P2P DataChannel with Start Sender is still open, never downgrade status!
-        if (this.peerConnection && this.peerConnection.open) {
+        if (this.isDataChannelReady(this.peerConnection)) {
           if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
             setTimeout(() => {
               try { this.peer.reconnect(); } catch (e) {}
-            }, 1500);
+            }, 800);
           }
           return;
         }
 
         if (err && err.type === 'unavailable-id') {
-          setTimeout(() => this.initFinishHostPeer(), 2000);
+          setTimeout(() => this.initFinishHostPeer(), 1500);
           return;
         }
 
         if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
           setTimeout(() => {
             try { this.peer.reconnect(); } catch (e) {}
-          }, 1500);
+          }, 800);
         } else {
           this.updateSyncBadge('offline', '單機模式 (聲速補償)');
         }
@@ -1595,8 +1678,12 @@ class ProFinishApp {
     const connectDataChannel = (peerInstance) => {
       const hostPeerId = `profinish-heat-${targetCode}`;
       console.log(`[PeerJS] Connecting to host: ${hostPeerId}`);
-      if (this.peerConnection && this.peerConnection.open) {
+      if (this.isDataChannelReady(this.peerConnection)) {
         return;
+      }
+      if (this.peerConnection) {
+        try { this.peerConnection.close(); } catch (e) {}
+        this.peerConnection = null;
       }
       const conn = peerInstance.connect(hostPeerId, { reliable: true });
 
@@ -1606,6 +1693,7 @@ class ProFinishApp {
           this.reconnectTimer = null;
         }
         this.peerConnection = conn;
+        this.lastPongTime = performance.now();
         if (this.dom.btnConnectHost) {
           this.dom.btnConnectHost.textContent = '已連線';
           this.dom.btnConnectHost.disabled = false;
@@ -1623,7 +1711,7 @@ class ProFinishApp {
             this.dom.senderSyncBadge.textContent = '🔄 訊號保持/重連中...';
             this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800";
           }
-          this.scheduleSenderReconnect(1200);
+          this.scheduleSenderReconnect(400);
         } else {
           if (this.dom.btnConnectHost) {
             this.dom.btnConnectHost.textContent = '連線';
@@ -1677,16 +1765,16 @@ class ProFinishApp {
         if (this.senderPeer === senderPeer && !senderPeer.destroyed) {
           setTimeout(() => {
             try { senderPeer.reconnect(); } catch (e) {}
-          }, 800);
+          }, 400);
         }
       });
 
       senderPeer.on('error', (err) => {
         console.warn('[PeerJS] Sender peer error:', err.type || err);
-        if (this.peerConnection && this.peerConnection.open) return;
+        if (this.isDataChannelReady(this.peerConnection)) return;
 
         if (this.shouldStayConnected) {
-          this.scheduleSenderReconnect(1500);
+          this.scheduleSenderReconnect(600);
         } else {
           this.showToast('配對失敗：找不到該代碼之終點機，請確認代碼或網路連線', 'warn');
           if (this.dom.btnConnectHost) {
@@ -1703,40 +1791,62 @@ class ProFinishApp {
     }
   }
 
-  scheduleSenderReconnect(delayMs = 1500) {
+  scheduleSenderReconnect(delayMs = 500) {
     if (!this.shouldStayConnected || !this.targetRoomCode) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.shouldStayConnected && (!this.peerConnection || !this.peerConnection.open)) {
+      if (this.shouldStayConnected && !this.isDataChannelReady(this.peerConnection)) {
         this.connectToFinishHost(true);
       }
     }, delayMs);
   }
 
   setupDataChannel(conn, roleType) {
+    this.lastPeerActivityTime = performance.now();
     conn.on('data', (data) => {
+      this.lastPeerActivityTime = performance.now();
       this.handleIncomingPeerData(data, roleType);
     });
 
     if (roleType === 'sender') {
+      this.lastPongTime = performance.now();
       this.dom.senderSyncBadge.textContent = '已雙機直連 (校時中)';
       this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
       // Start PTP-Lite Ping-Pong every 500ms
       this.startPtpPingLoop(conn);
+
+      // Flush any pending start trigger that was pressed while reconnecting!
+      if (this.pendingStartTrigger) {
+        const pending = this.pendingStartTrigger;
+        this.pendingStartTrigger = null;
+        const elapsedSinceGun = performance.now() - pending.triggerPerfNow;
+        if (elapsedSinceGun >= 0 && elapsedSinceGun < 8000) {
+          const compensatedDelay = pending.baseTransitDelay + elapsedSinceGun;
+          try {
+            conn.send({
+              type: pending.type || 'race_start',
+              triggerId: pending.triggerId,
+              transitDelay: compensatedDelay,
+              source: pending.source || 'sender_touch'
+            });
+            this.showToast(`🚀 已補發起跑訊號 (自動補償 ${ (elapsedSinceGun / 1000).toFixed(2) }s 延遲)！`, 'success');
+          } catch (e) {}
+        }
+      }
     } else {
       this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
-      conn.send({ type: 'arm_status', isArmed: this.isArmed });
-      conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
+      try {
+        conn.send({ type: 'arm_status', isArmed: this.isArmed });
+        conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
+      } catch (e) {}
 
       const onHostConnClosed = () => {
         if (this.peerConnection === conn) {
           this.peerConnection = null;
           this.updateSyncBadge('ready', `配對代碼 [${this.roomCode}] 等待連線`);
         }
-        if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
-          try { this.peer.reconnect(); } catch (e) {}
-        }
+        this.ensureFinishHostPeerAlive();
       };
       conn.on('close', onHostConnClosed);
       conn.on('error', onHostConnClosed);
@@ -1746,36 +1856,52 @@ class ProFinishApp {
   startPtpPingLoop(conn) {
     if (this.ptpTimer) clearInterval(this.ptpTimer);
     this.ptpTimer = setInterval(() => {
-      if (conn && conn.open) {
+      if (this.isDataChannelReady(conn)) {
+        // Watchdog: if no ptp_pong received for > 2.2s, DataChannel is half-open/frozen -> fast reconnect!
+        if (this.lastPongTime > 0 && (performance.now() - this.lastPongTime > 2200)) {
+          console.warn('[PeerJS] PTP Pong watchdog timeout (>2.2s), reconnecting DataChannel...');
+          this.lastPongTime = performance.now();
+          try { conn.close(); } catch (e) {}
+          if (this.peerConnection === conn) this.peerConnection = null;
+          this.scheduleSenderReconnect(150);
+          return;
+        }
         try {
           conn.send({
             type: 'ptp_ping',
             t1: performance.now()
           });
-        } catch (e) {}
+        } catch (e) {
+          this.scheduleSenderReconnect(200);
+        }
       } else if (this.role === 'start' && this.shouldStayConnected) {
-        this.scheduleSenderReconnect(800);
+        this.scheduleSenderReconnect(300);
       }
     }, 500);
   }
 
   handleIncomingPeerData(data, currentRole) {
+    if (!data || !data.type) return;
+
     // Finish Host handles PTP Ping from Sender
     if (data.type === 'ptp_ping') {
       const t2 = performance.now();
       const t3 = performance.now();
-      if (this.peerConnection) {
-        this.peerConnection.send({
-          type: 'ptp_pong',
-          t1: data.t1,
-          t2: t2,
-          t3: t3
-        });
+      if (this.peerConnection && this.peerConnection.open) {
+        try {
+          this.peerConnection.send({
+            type: 'ptp_pong',
+            t1: data.t1,
+            t2: t2,
+            t3: t3
+          });
+        } catch (e) {}
       }
     } 
     // Start Sender handles PTP Pong from Host
     else if (data.type === 'ptp_pong') {
       const t4 = performance.now();
+      this.lastPongTime = t4;
       const t1 = data.t1;
       const t2 = data.t2;
       const t3 = data.t3;
@@ -1798,6 +1924,11 @@ class ProFinishApp {
       this.clockOffset = avgOffset;
       this.meanRtt = avgRtt;
 
+      if (this.dom.senderSyncBadge) {
+        this.dom.senderSyncBadge.textContent = '🟢 已雙機直連 (PTP同步)';
+        this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
+      }
+
       // Update PTP Status UI on Sender
       if (this.dom.ptpRttVal) this.dom.ptpRttVal.textContent = `${avgRtt.toFixed(1)} ms`;
       if (this.dom.ptpOffsetVal) this.dom.ptpOffsetVal.textContent = `${avgOffset.toFixed(1)} ms`;
@@ -1813,18 +1944,39 @@ class ProFinishApp {
         this.dom.ptpSyncRating.className = `${colorClass} font-bold`;
       }
     }
+    // Start Sender receives instant ACK from Finish Host for race_start
+    else if (data.type === 'race_start_ack') {
+      if (data.triggerId) {
+        this._ackedTriggerId = data.triggerId;
+      }
+      this.pendingStartTrigger = null;
+    }
     // Finish Host handles race start signal or zero-test trigger from Sender
     else if (data.type === 'race_start' || data.type === 'zero_test_trigger') {
+      // Immediately send ACK back to Start Sender so its burst retry knows we received it
+      if (this.peerConnection && this.peerConnection.open && data.triggerId) {
+        try {
+          this.peerConnection.send({ type: 'race_start_ack', triggerId: data.triggerId });
+        } catch (e) {}
+      }
+
+      // Deduplicate burst packets for the same triggerId
+      if (data.triggerId && this._lastHandledTriggerId === data.triggerId && this.raceState === 'running') {
+        return;
+      }
+
       if (data.type === 'race_start' && !this.isArmed) {
         console.warn('[PeerJS] Received race_start but Finish Host is DISARMED (已鎖定).');
         this.showToast('🔒 終點處於「已鎖定」狀態，已阻擋起跑訊號！請點擊上方切換為「待命中 (ARM)」', 'warn');
         if (this.peerConnection && this.peerConnection.open) {
-          this.peerConnection.send({ type: 'host_disarmed' });
+          try { this.peerConnection.send({ type: 'host_disarmed' }); } catch (e) {}
         }
         return;
       }
 
-      const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 500)
+      this._lastHandledTriggerId = data.triggerId || String(Date.now());
+
+      const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
         ? data.transitDelay
         : 5;
       const effectiveStartTime = performance.now() - transitDelay;
@@ -1903,27 +2055,68 @@ class ProFinishApp {
 
   senderSendTrigger() {
     // If connected and host is locked, prevent false start and alert starter
-    if (this.peerConnection && this.peerConnection.open && this.hostIsArmed === false) {
+    if (this.isDataChannelReady(this.peerConnection) && this.hostIsArmed === false) {
       this.showToast('🔒 終點平板為「已鎖定」狀態，請先請終點裁判按「待命中 (ARM)」！', 'warn');
       if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       return;
     }
 
-    const localNow = performance.now();
-    const transitDelay = (this.meanRtt && this.meanRtt > 0 && this.meanRtt < 200) ? (this.meanRtt / 2) : 5;
+    const triggerPerfNow = performance.now();
+    const baseTransitDelay = (this.meanRtt && this.meanRtt > 0 && this.meanRtt < 200) ? (this.meanRtt / 2) : 5;
+    const triggerId = `trig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Trigger local gunshot audio & visual flash
+    // Trigger local gunshot audio & visual flash immediately
     this.playGunshotAudio();
     this.showZeroTestFlash();
     if (navigator.vibrate) navigator.vibrate([150, 50, 150]);
 
-    if (this.peerConnection && this.peerConnection.open) {
-      this.peerConnection.send({
+    const sendBurstPacket = () => {
+      if (this._ackedTriggerId === triggerId) return true;
+      if (this.isDataChannelReady(this.peerConnection)) {
+        const elapsedSinceGun = Math.max(0, performance.now() - triggerPerfNow);
+        try {
+          this.peerConnection.send({
+            type: 'race_start',
+            triggerId: triggerId,
+            transitDelay: baseTransitDelay + elapsedSinceGun,
+            source: 'sender_touch'
+          });
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+      return false;
+    };
+
+    if (sendBurstPacket()) {
+      // Queue as pending and send 2 fast follow-up burst packets (35ms, 100ms) with dynamically compensated transitDelay
+      // in case the first packet hit a momentary Wi-Fi jitter or OS wake-up after saving a photo!
+      this.pendingStartTrigger = {
         type: 'race_start',
-        transitDelay: transitDelay,
+        triggerId: triggerId,
+        triggerPerfNow: triggerPerfNow,
+        baseTransitDelay: baseTransitDelay,
         source: 'sender_touch'
-      });
+      };
+      setTimeout(() => sendBurstPacket(), 35);
+      setTimeout(() => {
+        if (!sendBurstPacket() && this._ackedTriggerId !== triggerId && this.shouldStayConnected) {
+          this.connectToFinishHost(true);
+        }
+      }, 100);
       this.showToast('🚀 起跑訊號已發送！終點機已同步開始計時', 'success');
+    } else if (this.shouldStayConnected && this.targetRoomCode) {
+      // Paired with Finish Host, but connection was momentarily reconnecting -> queue & reconnect immediately!
+      this.pendingStartTrigger = {
+        type: 'race_start',
+        triggerId: triggerId,
+        triggerPerfNow: triggerPerfNow,
+        baseTransitDelay: baseTransitDelay,
+        source: 'sender_touch'
+      };
+      this.connectToFinishHost(true);
+      this.showToast('⚡ 鳴槍已記錄！正在瞬時重連終點機並自動補償起跑時間...', 'info');
     } else {
       // Non-blocking toast: Never block audio with modal alert!
       this.showToast('💥 鳴槍完成 (獨立發令模式 · 未連線終點機)', 'warn');
@@ -2201,7 +2394,7 @@ class ProFinishApp {
   }
 
   adjustZeroOffset(deltaMs) {
-    this.zeroOffsetMs = Math.round((this.zeroOffsetMs + deltaMs) * 10) / 10;
+    this.zeroOffsetMs = Math.max(-150, Math.min(150, Math.round((this.zeroOffsetMs + deltaMs) * 10) / 10));
     localStorage.setItem('profinish_zero_offset', this.zeroOffsetMs.toFixed(1));
     this.updateZeroOffsetDisplay();
     const sign = this.zeroOffsetMs >= 0 ? '+' : '';
@@ -2221,8 +2414,8 @@ class ProFinishApp {
       return;
     }
     const deltaSec = this.currentCursorTimeSec;
-    // To make currentCursorTimeSec become 0.000s, effectiveStartTime needs to be shifted forward by deltaSec
-    this.zeroOffsetMs = Math.round((this.zeroOffsetMs + deltaSec * 1000) * 10) / 10;
+    // Clamp zero offset to safe hardware range [-150ms, +150ms] so accidental cursor placement never delays future race start!
+    this.zeroOffsetMs = Math.max(-150, Math.min(150, Math.round((this.zeroOffsetMs + deltaSec * 1000) * 10) / 10));
     localStorage.setItem('profinish_zero_offset', this.zeroOffsetMs.toFixed(1));
     this.updateZeroOffsetDisplay();
 
@@ -2521,6 +2714,8 @@ class ProFinishApp {
 
   triggerSafeBlobDownload(blob, fileName) {
     if (!blob) return;
+    // Mark download in progress so capture-phase beforeunload/pagehide listeners block PeerJS from destroying P2P connection!
+    this._isDownloadingBlob = true;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.style.display = 'none';
@@ -2529,9 +2724,20 @@ class ProFinishApp {
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
-    // Immediately schedule camera wake-up in case mobile browser paused <video> on download click
-    setTimeout(() => this.ensureCameraAlive(), 300);
-    setTimeout(() => this.ensureCameraAlive(), 1200);
+    // Immediately schedule camera & PeerJS wake-up in case mobile browser paused <video> or socket on download click
+    setTimeout(() => {
+      this.ensureCameraAlive();
+      this.ensureFinishHostPeerAlive();
+    }, 150);
+    setTimeout(() => {
+      this.ensureCameraAlive();
+      this.ensureFinishHostPeerAlive();
+    }, 600);
+    setTimeout(() => {
+      this._isDownloadingBlob = false;
+      this.ensureCameraAlive();
+      this.ensureFinishHostPeerAlive();
+    }, 2000);
     // Delay revoking URL so mobile/desktop browser download stream does not abort or trigger page unload
     setTimeout(() => {
       if (a.parentNode) a.parentNode.removeChild(a);
@@ -2876,10 +3082,14 @@ class ProFinishApp {
 
     // Download PNG locally using async toBlob (non-blocking to preserve WebRTC P2P connection)
     expCanvas.toBlob((blob) => {
+      const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+      const hasBackend = !location.hostname.endsWith('github.io') || Boolean(configuredBackend);
       let proofDataUrl = null;
-      try {
-        proofDataUrl = expCanvas.toDataURL('image/jpeg', 0.80);
-      } catch (e) {}
+      if (hasBackend) {
+        try {
+          proofDataUrl = expCanvas.toDataURL('image/jpeg', 0.80);
+        } catch (e) {}
+      }
       // Immediately release offscreen canvas GPU backing store so mobile WebKit never evicts <video> camera feed!
       expCanvas.width = 1;
       expCanvas.height = 1;

@@ -1,26 +1,32 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-27 19:49  
+**更新時間**：2026-10-27 21:25  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v4.9)
+## 📋 本次完成事項 (v5.0)
 
-1. **修復儲存壓線證明圖後返回「攝影計時」畫面全黑問題**：
+1. **修復儲存壓線證明圖後，終點機與起點機 WebRTC 連線中斷問題**：
    - **問題根因**：
-     1. 行動裝置（iOS Safari / Android Chrome）觸發圖檔下載（`<a download>`）或跳出系統存檔預覽時，會自動暫停 `<video id="cameraVideo">` 播放或中斷/靜音相機 `MediaStreamTrack`（`readyState === 'ended'` 或 `muted`）。
-     2. 原先 `rawSlitCanvas` 雙緩衝加上巨幅 `expCanvas`（最高達 14000px 寬）未於匯出後立即釋放 GPU 記憶體，且 `#reviewDrawer` 使用全畫面 `backdrop-blur-2xl`，觸發行動版 WebKit GPU 貼圖記憶體上限（Total canvas memory limit），導致硬體相機解碼畫面被系統強制卸載變黑。
+     1. PeerJS (`peerjs@1.5.4`) 內部預設在 `window` 註冊了 `beforeunload` / `unload` 事件監聽並直接呼叫 `peer.destroy()`；當點擊 `<a href="blob:..." download>` 觸發證明圖存檔時，行動與桌面瀏覽器會在下載管理器攔截前先觸發 `beforeunload` / `pagehide`，導致 PeerJS 主動摧毀雙機 WebRTC 連線！
+     2. `exportPhotoFinishProof()` 在 GitHub Pages 純前端環境下仍同步執行 `expCanvas.toDataURL('image/jpeg', 0.80)`，造成主執行緒在存檔瞬間阻塞，使行動系統彈出存檔對話框時 WebRTC 心跳超時進入「假連線（Half-open Zombie DataChannel）」狀態。
    - **修正措施**：
-     - **移除雙倍 Canvas 記憶體開銷**：改以輕量 DOM 疊加層（`#laneMarkersOverlay`）呈現判讀畫卷上的道次壓線標記，不再建立第二張全尺寸 `rawSlitCanvas`，使 `slitCanvas` 本身保持純淨且記憶體減半。
-     - **匯出後立即釋放 GPU 畫布記憶體**：將證明圖匯出畫布上限控制在安全的 `4096×720` 內，並在 `toBlob()` 完成瞬間執行 `expCanvas.width = 1; expCanvas.height = 1;` 立即歸還 GPU 記憶體；同時移除 `#reviewDrawer` 的 `backdrop-blur-2xl`。
-     - **實裝相機自動喚醒與凍結看門狗 (`ensureCameraAlive()`)**：於點擊「⬇ 回攝影」收合抽屜、觸發檔案下載後、以及 `visibilitychange` / `focus` / `pageshow` 時自動檢查相機狀態；若偵測到 `<video>` 暫停、軌道中斷或畫面時間軸 `video.currentTime` 凍結未推進，立即自動重啟相機串流。
-2. **實裝「自動截取第一位選手前 1 秒 ～ 最後一位選手後 0.5 秒」與「8 倍水平放大特寫」**：
-   - 自動找出當前組別已判定成績的最早時間 `firstRunnerTime` 與最晚時間 `lastRunnerTime`，截取範圍固定為 `[Math.max(0, firstRunnerTime - 1.0), lastRunnerTime + 0.5]`，並水平放大 8 倍繪製，搭配 1:1 原生清晰時間尺與道次名次旗標。
+     - 在 `bindPeerKeepAliveEvents()` 註冊 Capture 階段 (`useCapture = true`) 的 `beforeunload`、`unload`、`pagehide` 攔截器，當 `_isDownloadingBlob === true` 時執行 `e.stopImmediatePropagation()`，徹底阻止 PeerJS 在下載檔案時自我銷毀連線。
+     - 於 `exportPhotoFinishProof()` 僅在有連接本地後台伺服器時才編碼 `proofDataUrl`，消除 GitHub Pages 下載時的同步阻塞。
+     - 新增 `isDataChannelReady(conn)`、終點端 `ensureFinishHostPeerAlive()` 1.5 秒看門狗與起點端 `lastPongTime` (2.2 秒無 Pong 自動閃電重連)，即使系統原生存檔視窗短暫凍結背景分頁也能在數百毫秒內無縫自癒。
+2. **修復起點端按下手動計時後，終點端碼表無法馬上開始計時問題**：
+   - **問題根因**：
+     1. 終點機儲存完上一組證明圖後若仍停留在 `#reviewDrawer`（判讀與檢錄抽屜），下一組起點鳴槍時抽屜遮住了主畫面碼表，且 `handleStartTrigger()` 先同步重繪整張畫布網格才設定 `this.raceState = 'running'`。
+     2. 若先前誤按過「一鍵將目前紅線設為 00:00.000」導致 `localStorage` 中的 `profinish_zero_offset` 存有大額正偏移（例如數秒），會使 `effectiveStartTime` 被推向未來時間（`effectiveStartTime > performance.now()`），導致碼表在起跑後數秒內一直卡在 `00:00.00`！
+     3. 起點端原本只發送單一 `race_start` 封包，若逢存檔後瞬間網路抖動或重連中則訊號遺失。
+   - **修正措施**：
+     - `handleStartTrigger()` 收到起跑訊號瞬間自動收合 `#reviewDrawer` / `#toolsDrawer`，優先將 `this.raceState = 'running'` 與 `#liveClockDisplay` 立即跳轉為 `00:00.01`，並強制限制 `effectiveStartTime <= performance.now() - 2` 與 `zeroOffsetMs` 安全範圍 `[-150ms, +150ms]`。
+     - `senderSendTrigger()` 實裝 3 連發叢發傳送（`0ms`、`35ms`、`100ms`）搭配 `race_start_ack` 確認與動態 `transitDelay` 經過時間補償；若重連中按下鳴槍則自動排入 `pendingStartTrigger`，於連線接通瞬間自動補發並扣除延遲。
 3. **Service Worker 與版本升級**：
-   - 升級至 `profinish-v4.9`，更新 `index.html` 腳本引用版本 `app.js?v=4.9`。
+   - 升級至 `profinish-v5.0`，更新 `index.html` 腳本引用版本 `app.js?v=5.0`。
 
 ---
 
