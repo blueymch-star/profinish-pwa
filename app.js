@@ -27,7 +27,7 @@ class ProFinishApp {
     // Slit-scan camera configuration
     this.slitXRatio = 0.5; // Default 50% (screen center)
     this.sliceWidth = 2; // px per slice (fine, crisp temporal resolution)
-    this.cameraFps = parseInt(localStorage.getItem('profinish_cam_fps') || '120', 10);
+    this.cameraFps = parseInt(localStorage.getItem('profinish_cam_fps') || '60', 10);
     this.autoDelaySeconds = 0; // Delay before starting slice writes
     this.canvasZoom = 1.0;
     this.currentCursorPixelX = 0;
@@ -87,7 +87,7 @@ class ProFinishApp {
   init() {
     this.cacheDom();
     if (this.dom.selectCamFps) {
-      this.dom.selectCamFps.value = String(this.cameraFps || 120);
+      this.dom.selectCamFps.value = String(this.cameraFps || 60);
     }
     this.initDefaultHeatData(this.currentHeat);
     this.setDistance(this.currentDistance);
@@ -361,13 +361,17 @@ class ProFinishApp {
       this.cameraStream = null;
     }
 
-    const targetFps = this.cameraFps || 120;
+    const targetFps = this.cameraFps || 60;
+    const isHighFps = (targetFps >= 60);
+
+    // 720p (1280x720) mode unlocks 60 FPS on mobile Safari (AVCaptureSessionPreset1280x720) and Android WebRTC.
+    // 1080p (1920x1080) locks mobile hardware camera pipelines to 30 FPS.
     const constraints = {
       video: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         facingMode: deviceId ? undefined : { ideal: 'environment' },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: isHighFps ? { ideal: 1280, max: 1280 } : { ideal: 1920 },
+        height: isHighFps ? { ideal: 720, max: 720 } : { ideal: 1080 },
         frameRate: { ideal: targetFps }
       },
       audio: false
@@ -392,6 +396,15 @@ class ProFinishApp {
       // Read track capabilities (e.g. zoom, fps) & bind auto-recovery if mobile OS stops/mutes camera during file save
       const track = this.cameraStream.getVideoTracks()[0];
       if (track) {
+        if (isHighFps && track.applyConstraints) {
+          try {
+            await track.applyConstraints({
+              width: { ideal: 1280, max: 1280 },
+              height: { ideal: 720, max: 720 },
+              frameRate: { ideal: targetFps }
+            });
+          } catch (e) {}
+        }
         const settings = track.getSettings ? track.getSettings() : {};
         const reportedFps = settings.frameRate ? Math.round(settings.frameRate) : targetFps;
         if (this.dom.camFpsBadge) {
@@ -406,7 +419,7 @@ class ProFinishApp {
       }
 
       if (this.dom.camLensBadge) {
-        this.dom.camLensBadge.textContent = '主鏡頭 1x';
+        this.dom.camLensBadge.textContent = isHighFps ? '720p 高速模式' : '1080p 標準模式';
         this.dom.camLensBadge.classList.remove('text-red-400');
       }
 
@@ -2733,12 +2746,13 @@ class ProFinishApp {
   }
 
   setCameraFps(val) {
-    this.cameraFps = parseInt(val, 10) || 120;
+    this.cameraFps = parseInt(val, 10) || 60;
     localStorage.setItem('profinish_cam_fps', String(this.cameraFps));
     if (this.role === 'finish') {
       this.startCameraStream(this.selectedCameraId);
     }
-    this.showToast(`📷 拍攝幀率目標已設為 ${this.cameraFps} FPS`, 'info');
+    const modeLabel = this.cameraFps >= 60 ? `720p @ ${this.cameraFps} FPS (極速模式)` : `1080p @ 30 FPS (標準模式)`;
+    this.showToast(`📷 已切換為 ${modeLabel}`, 'info');
   }
 
   setAutoDelay(val) {

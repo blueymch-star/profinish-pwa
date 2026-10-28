@@ -1,13 +1,27 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-27 22:29  
+**更新時間**：2026-10-28 13:42  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.2)
+## 📋 本次完成事項 (v5.3)
+
+1. **實裝「720p 自動解鎖 60 FPS 模式」**：
+   - **實作原理**：
+     - 在 iOS Safari（AVCaptureSession）與 Android Chrome 的 WebRTC 驅動中，1080p（Full HD）硬體管線被預設鎖定在 30 FPS；只有在解析度設定為 720p（`1280×720`）時，系統底層才會放行 60 FPS 高幀率相機預設設定。
+   - **修正內容**：
+     - 在 `startCameraStream()` 中，當目標幀率 $\ge 60$ FPS 時，自動將視訊解析度限制在 720p（`width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 }`），並透過 `track.applyConstraints()` 主動向底層鏡頭請求 60 FPS 模式。
+     - 720p 的垂直高度 720 像素完整對應終點線 6 個跑道（每道 120 像素高），在維持高清晰度的同時將資料頻寬減半，讓支援 60 FPS 的 iPhone 與 Android 在戶外陽光下順利解鎖 60 FPS。
+     - 更新選單與左上角 HUD 狀態顯示：「720p 高速模式 / 60 FPS」。
+2. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v5.3`，更新 `index.html` 腳本引用版本 `app.js?v=5.3`。
+
+---
+
+## 📋 前次完成事項 (v5.2)
 
 1. **修復終點判讀沒有出現拍攝畫面問題 (`v5.1` 迴歸修復)**：
    - **問題根因**：
