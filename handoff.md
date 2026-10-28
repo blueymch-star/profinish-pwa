@@ -1,13 +1,27 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-28 13:42  
+**更新時間**：2026-10-28 16:22  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.3)
+## 📋 本次完成事項 (v5.4)
+
+1. **實裝「自動防止螢幕休眠（Screen Wake Lock API）」功能**：
+   - **實作原理**：
+     - 比賽期間若手機長時間未被碰觸（1～3 分鐘），行動作業系統會自動休眠關閉螢幕，並凍結 JavaScript 執行緒與 Wi-Fi 連線，導致雙機中斷。
+     - 透過現代瀏覽器標準 `navigator.wakeLock.request('screen')`（支援 iOS 16.4+ 與 Android Chrome），在進入網頁及使用者第一次點擊時自動向系統申請「螢幕常亮鎖定」，徹底防止螢幕自動變暗或進入休眠。
+   - **自動重連與狀態自癒**：
+     - 綁定 `visibilitychange` 事件：若使用者切換應用程式或被電話打斷後返回，系統會自動重新取得 WakeLock 螢幕鎖定。
+     - 終點選單與起點發令端同步加入「🔆 螢幕防休眠: 🟢 螢幕保持常亮」即時狀態徽章。
+2. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v5.4`，更新 `index.html` 腳本引用版本 `app.js?v=5.4`。
+
+---
+
+## 📋 前次完成事項 (v5.3)
 
 1. **實裝「720p 自動解鎖 60 FPS 模式」**：
    - **實作原理**：

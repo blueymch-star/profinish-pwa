@@ -64,6 +64,7 @@ class ProFinishApp {
     this.clockOffset = 0; // StartSender time + clockOffset = FinishHost time
     this.meanRtt = 0;
     this.ptpTimer = null;
+    this.wakeLock = null;
 
     // Web Audio State
     this.audioCtx = null;
@@ -107,6 +108,9 @@ class ProFinishApp {
     // Initialize PeerJS for P2P Wireless Sync
     this.initFinishHostPeer();
     this.bindPeerKeepAliveEvents();
+
+    // Prevent Screen Sleep / Lock during meets
+    this.initWakeLock();
 
     // Attach Event Listeners for Touch/Scrubbing
     this.bindCanvasScrubberEvents();
@@ -1544,6 +1548,80 @@ class ProFinishApp {
   }
 
   /* ========================================================================== */
+  /* SCREEN WAKE LOCK ENGINE (防止比賽期間手機螢幕自動休眠/鎖定)                  */
+  /* ========================================================================== */
+
+  initWakeLock() {
+    this.updateWakeLockUI(false);
+
+    if (!('wakeLock' in navigator)) {
+      console.warn('[WakeLock] Screen Wake Lock API is not supported on this browser.');
+      this.updateWakeLockUI(false, '不支援此瀏覽器');
+      return;
+    }
+
+    // 1. Initial acquisition
+    this.requestWakeLock();
+
+    // 2. Re-acquire when page becomes visible / unlocked
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.requestWakeLock();
+      }
+    });
+
+    // 3. User interaction hook (mobile browsers often require first user gesture to grant WakeLock)
+    ['touchstart', 'click'].forEach(evt => {
+      document.addEventListener(evt, () => {
+        if (!this.wakeLock || this.wakeLock.released) {
+          this.requestWakeLock();
+        }
+      }, { passive: true });
+    });
+  }
+
+  async requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    if (document.visibilityState !== 'visible') return;
+    if (this.wakeLock && !this.wakeLock.released) return;
+
+    try {
+      this.wakeLock = await navigator.wakeLock.request('screen');
+      this.updateWakeLockUI(true);
+      console.log('[WakeLock] Screen Wake Lock acquired! 螢幕常亮防休眠已生效');
+
+      this.wakeLock.addEventListener('release', () => {
+        console.log('[WakeLock] Screen Wake Lock was released.');
+        this.wakeLock = null;
+        this.updateWakeLockUI(false);
+      });
+    } catch (err) {
+      console.warn('[WakeLock] Failed to request Screen Wake Lock:', err.name || err);
+      this.updateWakeLockUI(false);
+    }
+  }
+
+  updateWakeLockUI(isActive, customText = null) {
+    const badges = [
+      document.getElementById('wakeLockStatusBadge'),
+      document.getElementById('senderWakeLockBadge')
+    ];
+    badges.forEach(badge => {
+      if (!badge) return;
+      if (customText) {
+        badge.textContent = `⚠️ ${customText}`;
+        badge.className = "font-mono text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700";
+      } else if (isActive) {
+        badge.textContent = "🟢 螢幕保持常亮";
+        badge.className = "font-mono text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
+      } else {
+        badge.textContent = "⚪ 待鎖定";
+        badge.className = "font-mono text-[10px] px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800";
+      }
+    });
+  }
+
+  /* ========================================================================== */
   /* WEBRTC P2P & PTP-LITE CLOCK SYNCHRONIZATION                                */
   /* ========================================================================== */
 
@@ -1561,6 +1639,9 @@ class ProFinishApp {
 
     const checkAndHealConnection = () => {
       if (document.visibilityState === 'hidden') return;
+      // Re-activate Screen WakeLock on wake-up
+      this.requestWakeLock();
+
       // 0. Heal Finish Host Camera Stream & PeerJS signaling if mobile OS paused/suspended during file save
       if (this.role === 'finish') {
         this.ensureCameraAlive();

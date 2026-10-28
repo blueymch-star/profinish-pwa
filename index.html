@@ -229,6 +229,17 @@
         </div>
       </div>
 
+      <!-- Screen Wake Lock Status Card (螢幕防休眠) -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between text-xs">
+        <div class="flex items-center gap-1.5">
+          <span class="text-amber-400 text-sm">🔆</span>
+          <span class="text-slate-300 font-medium text-[11px]">螢幕防休眠 (保持常亮)</span>
+        </div>
+        <span id="wakeLockStatusBadge" class="font-mono text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800">
+          🟢 螢幕保持常亮
+        </span>
+      </div>
+
       <!-- Event Distance Switcher (60m / 100m / 200m) -->
       <div>
         <label class="block text-[11px] text-slate-400 mb-1.5 font-medium">競賽項目距離：</label>
@@ -551,6 +562,10 @@
           <span class="text-slate-400 text-[11px]">終點待命狀態:</span>
           <span id="senderHostArmBadge" class="text-emerald-400 font-bold">🟢 待命中 (可起跑)</span>
         </div>
+        <div class="flex justify-between items-center text-xs font-mono border-t border-slate-800/60 pt-1.5">
+          <span class="text-slate-400 text-[11px]">螢幕防休眠:</span>
+          <span id="senderWakeLockBadge" class="text-emerald-400 font-bold">🟢 螢幕保持常亮</span>
+        </div>
       </div>
 
       <!-- Trigger 1: Big Foolproof Touch Trigger Button -->
@@ -630,6 +645,6 @@
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js?v=5.3"></script>
+  <script src="./app.js?v=5.4"></script>
 </body>
 </html>
