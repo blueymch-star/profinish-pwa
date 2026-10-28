@@ -1,13 +1,26 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-10-28 16:22  
+**更新時間**：2026-10-28 16:44  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.4)
+## 📋 本次完成事項 (v5.5)
+
+1. **實裝「全景時間軸快滑條（Timeline Overview Scrubber）」**：
+   - 在終點畫卷判讀工作台加入全局時間軸滑動軌道（`#timelineOverviewBar`），顯示目前起跑時間點、游標時間與最後一位選手完賽時間。
+   - 支援「滑桿即時快速導航」、「`⏮ 0s`（跳至起跑）」與「`末位 ⏭`（一鍵跳至最後一位選手）」，裁判可於 1 秒內在 20～40 秒長畫卷中任意穿梭。
+   - 微調工具列新增 `[-1s]` 與 `[+1s]` 大步進按鈕，跨越選手間空白秒數更省力。
+2. **實裝「拖曳碰壁自動滾動（Edge Auto-Scroll）」**：
+   - 當裁判在畫布上拖曳黃色判定游標靠近手機螢幕左/右邊界（50px 臨界區）時，觸發平滑 `requestAnimationFrame` 邊緣自動加速捲動，跟隨手指連續滾動整場畫卷，徹底解決長畫卷卡在螢幕邊界的問題。
+3. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v5.5`，更新 `index.html` 腳本引用版本 `app.js?v=5.5`。
+
+---
+
+## 📋 前次完成事項 (v5.4)
 
 1. **實裝「自動防止螢幕休眠（Screen Wake Lock API）」功能**：
    - **實作原理**：

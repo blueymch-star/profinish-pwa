@@ -201,6 +201,10 @@ class ProFinishApp {
       toolsDrawer: document.getElementById('toolsDrawer'),
       reviewDrawer: document.getElementById('reviewDrawer'),
       floatingSlitSlider: document.getElementById('floatingSlitSlider'),
+      timelineRange: document.getElementById('timelineRange'),
+      timelineStartLabel: document.getElementById('timelineStartLabel'),
+      timelineCurrentLabel: document.getElementById('timelineCurrentLabel'),
+      timelineEndLabel: document.getElementById('timelineEndLabel'),
       hudEventBadge: document.getElementById('hudEventBadge'),
       reviewHeatSubtitle: document.getElementById('reviewHeatSubtitle'),
       btnDist60: document.getElementById('btnDist60'),
@@ -1063,42 +1067,84 @@ class ProFinishApp {
     const viewport = this.dom.canvasViewport;
     const canvas = this.dom.slitCanvas;
     let isDragging = false;
+    let lastClientX = 0;
+    let autoScrollRaf = null;
 
-    const setCursorFromEvent = (e) => {
+    const stopEdgeScroll = () => {
+      if (autoScrollRaf) {
+        cancelAnimationFrame(autoScrollRaf);
+        autoScrollRaf = null;
+      }
+    };
+
+    const setCursorFromClientX = (clientX) => {
+      lastClientX = clientX;
       const rect = canvas.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
       const relativeX = (clientX - rect.left) / this.canvasZoom;
       this.updateCursorPosition(relativeX);
     };
 
-    viewport.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      setCursorFromEvent(e);
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (isDragging) setCursorFromEvent(e);
-    });
-
-    window.addEventListener('mouseup', () => {
-      isDragging = false;
-    });
-
-    viewport.addEventListener('touchstart', (e) => {
-      isDragging = true;
-      setCursorFromEvent(e);
-    }, { passive: false });
-
-    viewport.addEventListener('touchmove', (e) => {
-      if (isDragging) {
-        if (e.cancelable) e.preventDefault();
-        setCursorFromEvent(e);
+    const handleEdgeScroll = () => {
+      if (!isDragging) {
+        stopEdgeScroll();
+        return;
       }
-    }, { passive: false });
 
-    viewport.addEventListener('touchend', () => {
+      const vpRect = viewport.getBoundingClientRect();
+      const edgeMargin = 50; // px detection zone near left / right screen boundary
+      let scrollSpeed = 0;
+
+      if (lastClientX > vpRect.right - edgeMargin) {
+        // Dragging near right edge -> smoothly scroll viewport right
+        const factor = Math.min(1.8, (lastClientX - (vpRect.right - edgeMargin)) / edgeMargin);
+        scrollSpeed = 8 + factor * 24;
+      } else if (lastClientX < vpRect.left + edgeMargin) {
+        // Dragging near left edge -> smoothly scroll viewport left
+        const factor = Math.min(1.8, ((vpRect.left + edgeMargin) - lastClientX) / edgeMargin);
+        scrollSpeed = -(8 + factor * 24);
+      }
+
+      if (scrollSpeed !== 0) {
+        viewport.scrollLeft += scrollSpeed;
+        setCursorFromClientX(lastClientX);
+        autoScrollRaf = requestAnimationFrame(handleEdgeScroll);
+      } else {
+        stopEdgeScroll();
+      }
+    };
+
+    const onDragStart = (e) => {
+      isDragging = true;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      setCursorFromClientX(clientX);
+      stopEdgeScroll();
+    };
+
+    const onDragMove = (e) => {
+      if (!isDragging) return;
+      if (e.cancelable) e.preventDefault();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      setCursorFromClientX(clientX);
+
+      // Trigger edge auto-scroll loop when close to screen boundaries
+      if (!autoScrollRaf) {
+        handleEdgeScroll();
+      }
+    };
+
+    const onDragEnd = () => {
       isDragging = false;
-    });
+      stopEdgeScroll();
+    };
+
+    viewport.addEventListener('mousedown', onDragStart);
+    window.addEventListener('mousemove', onDragMove);
+    window.addEventListener('mouseup', onDragEnd);
+
+    viewport.addEventListener('touchstart', onDragStart, { passive: false });
+    viewport.addEventListener('touchmove', onDragMove, { passive: false });
+    viewport.addEventListener('touchend', onDragEnd);
+    viewport.addEventListener('touchcancel', onDragEnd);
   }
 
   updateCursorPosition(pixelX, autoScroll = false) {
@@ -1151,6 +1197,20 @@ class ProFinishApp {
       }
     }
 
+    // Synchronize Overview Timeline Scrubber Slider
+    if (this.dom.timelineRange && this.sliceIndex && this.sliceIndex.length > 0) {
+      const firstT = this.sliceIndex[0].timeSec;
+      const lastT = this.sliceIndex[this.sliceIndex.length - 1].timeSec;
+      const totalSpan = Math.max(0.1, lastT - firstT);
+      const ratio = Math.max(0, Math.min(1, (timeSec - firstT) / totalSpan));
+      if (!this._isDraggingTimelineSlider) {
+        this.dom.timelineRange.value = String(Math.round(ratio * 1000));
+      }
+      if (this.dom.timelineStartLabel) this.dom.timelineStartLabel.textContent = this.formatTimeSec(firstT);
+      if (this.dom.timelineEndLabel) this.dom.timelineEndLabel.textContent = this.formatTimeSec(lastT);
+      if (this.dom.timelineCurrentLabel) this.dom.timelineCurrentLabel.textContent = this.formatTimeSec(timeSec);
+    }
+
     // Format raw time: MM:SS.mmm (supports negative time for zero calibration)
     const sign = timeSec < 0 ? '-' : '';
     const absSec = Math.abs(timeSec);
@@ -1174,6 +1234,68 @@ class ProFinishApp {
           rMins > 0 ? `${rMins}:${rSecs.padStart(5, '0')}` : `${rSecs}s`;
       }
     }
+  }
+
+  formatTimeSec(timeSec) {
+    const sign = timeSec < 0 ? '-' : '';
+    const absSec = Math.abs(timeSec);
+    const mins = Math.floor(absSec / 60);
+    const secs = (absSec % 60).toFixed(2);
+    return `${sign}${String(mins).padStart(2, '0')}:${secs.padStart(5, '0')}`;
+  }
+
+  onTimelineSliderInput(val) {
+    if (!this.sliceIndex || this.sliceIndex.length === 0) return;
+    this._isDraggingTimelineSlider = true;
+    const ratio = parseFloat(val) / 1000.0;
+    const firstT = this.sliceIndex[0].timeSec;
+    const lastT = this.sliceIndex[this.sliceIndex.length - 1].timeSec;
+    const targetTime = firstT + ratio * (lastT - firstT);
+    this.stepCursorToTime(targetTime);
+    clearTimeout(this._timelineDragTimer);
+    this._timelineDragTimer = setTimeout(() => {
+      this._isDraggingTimelineSlider = false;
+    }, 150);
+  }
+
+  jumpToTimelineStart() {
+    if (!this.sliceIndex || this.sliceIndex.length === 0) {
+      this.updateCursorPosition(0, true);
+      return;
+    }
+    this.updateCursorPosition(this.sliceIndex[0].x, true);
+  }
+
+  jumpToTimelineEnd() {
+    if (!this.sliceIndex || this.sliceIndex.length === 0) {
+      this.updateCursorPosition(this.slitCurrentX, true);
+      return;
+    }
+    const last = this.sliceIndex[this.sliceIndex.length - 1];
+    this.updateCursorPosition(last.x, true);
+  }
+
+  stepCursorToTime(targetTime) {
+    if (!this.sliceIndex || this.sliceIndex.length === 0) {
+      this.updateCursorPosition(targetTime * 100.0, true);
+      return;
+    }
+    let low = 0;
+    let high = this.sliceIndex.length - 1;
+    let closest = this.sliceIndex[0];
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const item = this.sliceIndex[mid];
+      if (Math.abs(item.timeSec - targetTime) < Math.abs(closest.timeSec - targetTime)) {
+        closest = item;
+      }
+      if (item.timeSec < targetTime) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    this.updateCursorPosition(closest.x, true);
   }
 
   stepCursor(deltaSec) {

@@ -446,16 +446,39 @@
         </div>
       </div>
 
+      <!-- Quick Timeline Overview Scrubber Bar (全景時間軸快滑條) -->
+      <div id="timelineOverviewBar" class="flex-none bg-slate-950/95 border-t border-slate-800/80 px-3 py-1.5 flex items-center gap-2 select-none z-10">
+        <button onclick="app.jumpToTimelineStart()" class="text-[11px] font-mono text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700/80 shrink-0 active:scale-95 transition" title="跳至起跑">
+          ⏮ 0s
+        </button>
+
+        <div class="flex-1 flex flex-col justify-center relative min-w-0">
+          <input type="range" id="timelineRange" min="0" max="1000" value="0" step="1" oninput="app.onTimelineSliderInput(this.value)" class="w-full h-2.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-400">
+          <!-- Timeline duration markers -->
+          <div class="flex justify-between items-center text-[10px] font-mono text-slate-400 pt-0.5 px-0.5">
+            <span id="timelineStartLabel">00:00.00</span>
+            <span id="timelineCurrentLabel" class="text-amber-400 font-bold">00:00.00</span>
+            <span id="timelineEndLabel">00:00.00</span>
+          </div>
+        </div>
+
+        <button onclick="app.jumpToTimelineEnd()" class="text-[11px] font-mono text-slate-300 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700/80 shrink-0 active:scale-95 transition" title="跳至最末位選手">
+          末位 ⏭
+        </button>
+      </div>
+
       <!-- Scrubber Stepper & Lane Binding Toolbar -->
       <div class="flex-none bg-slate-900 border-t border-slate-800 p-2.5 flex flex-col gap-2 z-10" style="padding-bottom: max(calc(calc(env(safe-area-inset-bottom, 0px) + 12px)), 12px);">
         <!-- Steppers & Precision Time readout -->
         <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
           <div class="flex items-center gap-1 font-mono">
             <span class="text-[10px] text-slate-400 mr-1">微調:</span>
+            <button onclick="app.stepCursor(-1.0)" class="px-1.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold" title="後退1秒">-1s</button>
             <button onclick="app.stepCursor(-0.05)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">-0.05s</button>
             <button onclick="app.stepCursor(-0.01)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold">-0.01s</button>
             <button onclick="app.stepCursor(0.01)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold">+0.01s</button>
             <button onclick="app.stepCursor(0.05)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">+0.05s</button>
+            <button onclick="app.stepCursor(1.0)" class="px-1.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold" title="前進1秒">+1s</button>
             <button onclick="app.calibrateZeroFromCurrentCursor()" class="ml-1 px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-1 shadow active:scale-95" title="將當前游標位置設為 00:00.000 歸零起點">
               <span>🎯</span> 設為歸零基準
             </button>
@@ -645,6 +668,6 @@
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js?v=5.4"></script>
+  <script src="./app.js?v=5.5"></script>
 </body>
 </html>
