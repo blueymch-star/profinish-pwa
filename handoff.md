@@ -1,13 +1,29 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 22:30  
+**更新時間**：2026-11-01 22:48  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.9 — 修正起點端 A 徽章凍結、發令瞬時發射防阻擋、終點握手時機與多 Broker 容錯)
+## 📋 本次完成事項 (v5.10 — 修正終點端接收封包 ReferenceError 致命崩潰、PTP 指標雙向同步與面板聯動)
+
+1. **修正致命 Bug：`handleIncomingPeerData` 參數未宣告 `channelSource` 導致 ReferenceError 崩潰**：
+   - 終點機在接收到起點發送的 `race_start` 或 `test_pulse` 封包時，因 `handleIncomingPeerData(data, currentRole)` 缺少第三參數 `channelSource = 'path_a'`，執行到 `this.lastDeliveredBy = channelSource` 時直接噴發 uncaught `ReferenceError: channelSource is not defined`。
+   - 導致 JavaScript 執行緒瞬間中斷，後續的 `this.handleStartTrigger` 完全被跳過，造成「兩邊皆顯示連線，起點發令但終點碼錶未啟動」之核心根本原因。
+   - 現已補正簽名 `handleIncomingPeerData(data, currentRole, channelSource = 'path_a')`，且內部包覆 `try...catch` 隔離保護，保證計時啟動永不被次要日誌或路徑變數中斷。
+2. **終點主機診斷面板與計時啟動自動聯動**：
+   - 接收到起跑訊號時，若診斷彈窗（`diagnosticsModal`）處於開啟狀態，自動予以關閉，確保裁判畫面瞬間聚焦於即時狹縫掃描與碼錶走時。
+3. **PTP 延遲與時鐘偏移雙向同步至終點機**：
+   - 起點端在 PTP 計算完成後，自動發送 `ptp_metrics_sync` 同步真實 RTT 與 offset 給終點端。
+   - 終點端「🩺 連線診斷」面板不再顯示空白破折號 `-`，而是精準呈現如 `2.1 ms` 與 `15 筆樣本` 之即時品質數據。
+4. **快取與版本升級**：
+   - 升級至 `profinish-v5.10`（`sw.js` 快取 `profinish-v5.10`，`index.html` 引用 `app.js?v=5.10`）。
+
+---
+
+## 📋 前次完成事項 (v5.9 — 修正起點端 A 徽章凍結、發令瞬時發射防阻擋、終點握手時機與多 Broker 容錯)
 
 1. **修正起點端「A: 未連線」徽章凍結問題**：
    - 起點發令端在連線成功（`setupDataChannel`）、收到 PTP Pong（`handleIncomingPeerData`）、路由偵測完成（`detectRouteType`）、切換角色（`switchRole`）與斷線重連時，全面補上 `this.updateDualPathBadges()` 呼叫。

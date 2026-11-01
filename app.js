@@ -1136,6 +1136,9 @@ class ProFinishApp {
     }
     const ghModal = document.getElementById('ghSyncModal');
     if (ghModal) ghModal.classList.add('hidden');
+    if (this.dom.diagnosticsModal && !this.dom.diagnosticsModal.classList.contains('hidden')) {
+      this.closeDiagnosticsModal();
+    }
 
     const hostNow = performance.now();
     let effectiveStartTime = (typeof eventData.timestamp === 'number') ? eventData.timestamp : hostNow;
@@ -2460,7 +2463,7 @@ class ProFinishApp {
     this.lastPeerActivityTime = performance.now();
     conn.on('data', (data) => {
       this.lastPeerActivityTime = performance.now();
-      this.handleIncomingPeerData(data, roleType);
+      this.handleIncomingPeerData(data, roleType, 'path_a');
     });
 
     if (roleType === 'sender') {
@@ -2540,222 +2543,246 @@ class ProFinishApp {
     }, 500);
   }
 
-  handleIncomingPeerData(data, currentRole) {
+  handleIncomingPeerData(data, currentRole, channelSource = 'path_a') {
     if (!data || !data.type) return;
-
-    // Finish Host handles PTP Ping from Sender
-    if (data.type === 'ptp_ping') {
-      const t2 = performance.now();
-      const t3 = performance.now();
-      if (this.peerConnection && this.peerConnection.open) {
-        try {
-          this.peerConnection.send({
-            type: 'ptp_pong',
-            t1: data.t1,
-            t2: t2,
-            t3: t3,
-            hostSession: this.clockEpochId
-          });
-        } catch (e) {}
-      }
-    } 
-    // Start Sender handles PTP Pong from Host
-    else if (data.type === 'ptp_pong') {
-      const t4 = performance.now();
-      this.lastPongTime = t4;
-      const t1 = data.t1;
-      const t2 = data.t2;
-      const t3 = data.t3;
-
-      // PTP Calculations:
-      // RTT = (t4 - t1) - (t3 - t2)
-      // Offset θ = ((t2 - t1) + (t3 - t4)) / 2
-      const rtt = (t4 - t1) - (t3 - t2);
-      const offset = ((t2 - t1) + (t3 - t4)) / 2;
-
-      // v5.7: 終點機重新整理頁面/休眠喚醒後 performance.now() 基準會改變 -> 舊樣本作廢重新校時
-      if (data.hostSession) {
-        this.lastKnownHostSession = data.hostSession;
-        if (this.ptpHostSession !== data.hostSession || this.ptpLocalEpoch !== this.clockEpochId) {
-          this.ptpSamples = [];
-          this.ptpHostSession = data.hostSession;
-          this.ptpLocalEpoch = this.clockEpochId;
-        }
-      }
-      this.lastPtpSampleAt = t4;
-
-      this.ptpSamples.push({ rtt, offset });
-      if (this.ptpSamples.length > 20) this.ptpSamples.shift();
-
-      // Filter lowest 5 RTT samples to eliminate network jitter
-      const sorted = [...this.ptpSamples].sort((a, b) => a.rtt - b.rtt);
-      const best = sorted.slice(0, Math.min(5, sorted.length));
-      const avgOffset = best.reduce((sum, s) => sum + s.offset, 0) / best.length;
-      const avgRtt = best.reduce((sum, s) => sum + s.rtt, 0) / best.length;
-
-      this.clockOffset = avgOffset;
-      this.meanRtt = avgRtt;
-
-      if (this.dom.senderSyncBadge) {
-        this.dom.senderSyncBadge.textContent = '🟢 已雙機直連 (PTP同步)';
-        this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
-      }
-
-      // Update PTP Status UI on Sender
-      if (this.dom.ptpRttVal) this.dom.ptpRttVal.textContent = `${avgRtt.toFixed(1)} ms`;
-      if (this.dom.ptpOffsetVal) this.dom.ptpOffsetVal.textContent = `${avgOffset.toFixed(1)} ms`;
-      
-      let rating = "極佳 (< 2ms)";
-      let colorClass = "text-emerald-400";
-      if (avgRtt > 20) {
-        rating = "良好 (< 20ms)";
-        colorClass = "text-amber-400";
-      }
-      if (this.dom.ptpSyncRating) {
-        this.dom.ptpSyncRating.textContent = rating;
-        this.dom.ptpSyncRating.className = `${colorClass} font-bold`;
-      }
-      const routeLabel = this.routeTypeLabel();
-      if (routeLabel && this.dom.senderSyncBadge) {
-        this.dom.senderSyncBadge.textContent = `🟢 已雙機直連 (PTP同步 · ${routeLabel})`;
-      }
-      this.updateDualPathBadges();
-
-      // A start trigger is waiting for a trustworthy clock offset -> flush now with hostT0
-      if (this.pendingStartTrigger) this.flushPendingStartTrigger();
-    }
-    // Start Sender receives instant ACK from Finish Host for race_start
-    else if (data.type === 'race_start_ack') {
-      if (data.triggerId) {
-        this._ackedTriggerId = data.triggerId;
-      }
-      if (!data.triggerId || !this.pendingStartTrigger || this.pendingStartTrigger.triggerId === data.triggerId) {
-        if (this.pendingStartTrigger && this.pendingStartTrigger._flushedLate) {
-          const pathLabel = (channelSource === 'path_b') ? '路徑 B 備援通道' : '路徑 A 直連';
-          this.showToast(`✅ 終點機已確認收到起跑訊號（經 ${pathLabel} 自動校正）`, 'success');
-        }
-        this.pendingStartTrigger = null;
-        this.stopStartResendLoop();
-      }
-    }
-    // Finish Host handles race start signal or zero-test trigger from Sender
-    else if (data.type === 'race_start' || data.type === 'zero_test_trigger') {
-      // Immediately send ACK back across both Path A & Path B so its burst retry knows we received it
-      if (this.peerConnection && this.peerConnection.open && data.triggerId) {
-        try {
-          this.peerConnection.send({ type: 'race_start_ack', triggerId: data.triggerId });
-        } catch (e) {}
-      }
-      this.sendPathBAck(data.triggerId);
-
-      // Deduplicate burst packets for the same triggerId
-      if (data.triggerId && this._lastHandledTriggerId === data.triggerId && this.raceState === 'running') {
-        return;
-      }
-
-      if (data.type === 'race_start' && !this.isArmed) {
-        console.warn('[PeerJS] Received race_start but Finish Host is DISARMED (已鎖定).');
-        this.showToast('🔒 終點處於「已鎖定」狀態，已阻擋起跑訊號！請點擊上方切換為「待命中 (ARM)」', 'warn');
+    try {
+      // Finish Host handles PTP Ping from Sender
+      if (data.type === 'ptp_ping') {
+        const t2 = performance.now();
+        const t3 = performance.now();
         if (this.peerConnection && this.peerConnection.open) {
-          try { this.peerConnection.send({ type: 'host_disarmed' }); } catch (e) {}
+          try {
+            this.peerConnection.send({
+              type: 'ptp_pong',
+              t1: data.t1,
+              t2: t2,
+              t3: t3,
+              hostSession: this.clockEpochId
+            });
+          } catch (e) {}
         }
-        return;
-      }
+      } 
+      // Start Sender handles PTP Pong from Host
+      else if (data.type === 'ptp_pong') {
+        const t4 = performance.now();
+        this.lastPongTime = t4;
+        const t1 = data.t1;
+        const t2 = data.t2;
+        const t3 = data.t3;
 
-      this._lastHandledTriggerId = data.triggerId || String(Date.now());
-      this.lastDeliveredBy = channelSource;
+        // PTP Calculations:
+        // RTT = (t4 - t1) - (t3 - t2)
+        // Offset θ = ((t2 - t1) + (t3 - t4)) / 2
+        const rtt = (t4 - t1) - (t3 - t2);
+        const offset = ((t2 - t1) + (t3 - t4)) / 2;
 
-      // v5.7: 優先採用起點換算好的「終點時鐘鳴槍時刻 hostT0」——不論封包走多久、補發幾次，起跑時間都正確
-      const hostNowRx = performance.now();
-      const hostT0Valid = typeof data.hostT0 === 'number' && isFinite(data.hostT0) &&
-        data.hostSession && data.hostSession === this.clockEpochId &&
-        (hostNowRx - data.hostT0) >= -100 && (hostNowRx - data.hostT0) <= 15000;
+        // v5.7: 終點機重新整理頁面/休眠喚醒後 performance.now() 基準會改變 -> 舊樣本作廢重新校時
+        if (data.hostSession) {
+          this.lastKnownHostSession = data.hostSession;
+          if (this.ptpHostSession !== data.hostSession || this.ptpLocalEpoch !== this.clockEpochId) {
+            this.ptpSamples = [];
+            this.ptpHostSession = data.hostSession;
+            this.ptpLocalEpoch = this.clockEpochId;
+          }
+        }
+        this.lastPtpSampleAt = t4;
 
-      let effectiveStartTime;
-      let maxAgeMs = 5000;
-      if (hostT0Valid) {
-        effectiveStartTime = Math.min(data.hostT0, hostNowRx);
-        maxAgeMs = 15000;
-        console.log(`[PeerJS] Received ${data.type} with hostT0 via ${channelSource} (age ${(hostNowRx - data.hostT0).toFixed(1)}ms)`);
-      } else {
-        const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
-          ? data.transitDelay
-          : 5;
-        effectiveStartTime = hostNowRx - transitDelay;
-        maxAgeMs = 8000;
-        console.log(`[PeerJS] Received ${data.type} with transitDelay via ${channelSource}: ${transitDelay.toFixed(1)}ms`);
-      }
+        this.ptpSamples.push({ rtt, offset });
+        if (this.ptpSamples.length > 20) this.ptpSamples.shift();
 
-      this.handleStartTrigger({
-        source: data.type === 'zero_test_trigger' ? 'zero_test' : 'remote_sender',
-        timestamp: effectiveStartTime,
-        maxAgeMs: maxAgeMs
-      });
+        // Filter lowest 5 RTT samples to eliminate network jitter
+        const sorted = [...this.ptpSamples].sort((a, b) => a.rtt - b.rtt);
+        const best = sorted.slice(0, Math.min(5, sorted.length));
+        const avgOffset = best.reduce((sum, s) => sum + s.offset, 0) / best.length;
+        const avgRtt = best.reduce((sum, s) => sum + s.rtt, 0) / best.length;
 
-      const pathText = (channelSource === 'path_b') ? '（路徑 B 備援通道）' : '（路徑 A 直連）';
-      if (data.type === 'zero_test_trigger') {
-        this.showToast(`⚡ 接收到歸零測試訊號 ${pathText}！計時與狹縫攝影已同步啟動`, 'success');
-      } else {
-        this.showToast(`🚀 接收到起跑訊號 ${pathText}！已同步啟動計時`, 'success');
-      }
-    }
-    // Handle Diagnostics Test Pulse
-    else if (data.type === 'test_pulse') {
-      const ack = {
-        type: 'test_pulse_ack',
-        pulseId: data.pulseId,
-        t1: data.t1,
-        channel: channelSource
-      };
-      if (this.peerConnection && this.peerConnection.open) {
-        try { this.peerConnection.send(ack); } catch(e){}
-      }
-      this.sendPathBSignal(ack);
-      if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
-      this.showToast(`🔔 收到對端連線測試脈衝（經 ${channelSource === 'path_b' ? '路徑 B 備援' : '路徑 A 直連'}）`, 'info');
-    }
-    else if (data.type === 'test_pulse_ack') {
-      const rtt = Math.max(1, performance.now() - data.t1);
-      if (data.channel === 'path_b') {
-        this.testPulseStats.pathBRtt = rtt;
-      } else {
-        this.testPulseStats.pathARtt = rtt;
-      }
-      const labelA = this.testPulseStats.pathARtt ? `路徑 A: ${this.testPulseStats.pathARtt.toFixed(1)}ms` : '路徑 A: 等待中';
-      const labelB = this.testPulseStats.pathBRtt ? `路徑 B: ${this.testPulseStats.pathBRtt.toFixed(1)}ms` : '路徑 B: 等待中';
-      this.showToast(`📊 測試脈衝回覆！${labelA} · ${labelB}`, 'success');
-      this.renderDiagnostics();
-    }
-    // Handle Finish Host arm state received by Start Sender
-    else if (data.type === 'arm_status') {
-      this.hostIsArmed = data.isArmed;
-      if (data.hostSession) {
-        this.lastKnownHostSession = data.hostSession;
+        this.clockOffset = avgOffset;
+        this.meanRtt = avgRtt;
+
+        // Periodically sync latency & offset metrics to Finish Host so its diagnostics display is live
+        if (this.peerConnection && this.peerConnection.open && this.ptpSamples.length % 2 === 0) {
+          try {
+            this.peerConnection.send({
+              type: 'ptp_metrics_sync',
+              rtt: avgRtt,
+              offset: avgOffset,
+              sampleCount: this.ptpSamples.length
+            });
+          } catch(e) {}
+        }
+
+        if (this.dom.senderSyncBadge) {
+          this.dom.senderSyncBadge.textContent = '🟢 已雙機直連 (PTP同步)';
+          this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
+        }
+
+        // Update PTP Status UI on Sender
+        if (this.dom.ptpRttVal) this.dom.ptpRttVal.textContent = `${avgRtt.toFixed(1)} ms`;
+        if (this.dom.ptpOffsetVal) this.dom.ptpOffsetVal.textContent = `${avgOffset.toFixed(1)} ms`;
+        
+        let rating = "極佳 (< 2ms)";
+        let colorClass = "text-emerald-400";
+        if (avgRtt > 20) {
+          rating = "良好 (< 20ms)";
+          colorClass = "text-amber-400";
+        }
+        if (this.dom.ptpSyncRating) {
+          this.dom.ptpSyncRating.textContent = rating;
+          this.dom.ptpSyncRating.className = `${colorClass} font-bold`;
+        }
+        const routeLabel = this.routeTypeLabel();
+        if (routeLabel && this.dom.senderSyncBadge) {
+          this.dom.senderSyncBadge.textContent = `🟢 已雙機直連 (PTP同步 · ${routeLabel})`;
+        }
+        this.updateDualPathBadges();
+
+        // A start trigger is waiting for a trustworthy clock offset -> flush now with hostT0
         if (this.pendingStartTrigger) this.flushPendingStartTrigger();
       }
-      if (this.dom.senderHostArmBadge) {
-        if (data.isArmed) {
-          this.dom.senderHostArmBadge.textContent = '🟢 待命中 (可起跑)';
-          this.dom.senderHostArmBadge.className = 'text-emerald-400 font-bold';
-        } else {
-          this.dom.senderHostArmBadge.textContent = '🔒 已鎖定 (未就緒)';
-          this.dom.senderHostArmBadge.className = 'text-red-400 font-bold animate-pulse';
+      // Finish Host syncs metrics from Start Sender for UI display
+      else if (data.type === 'ptp_metrics_sync') {
+        this.meanRtt = data.rtt;
+        this.clockOffset = data.offset;
+        this._remotePtpSampleCount = data.sampleCount;
+        if (this.dom.diagnosticsModal && !this.dom.diagnosticsModal.classList.contains('hidden')) {
+          this.renderDiagnostics();
         }
       }
-    }
-    // Handle heat_changed sync between paired devices
-    else if (data.type === 'heat_changed' && data.heatKey) {
-      if (String(data.heatKey) !== String(this.currentHeat)) {
-        this.switchHeat(data.heatKey, false);
+      // Start Sender receives instant ACK from Finish Host for race_start
+      else if (data.type === 'race_start_ack') {
+        if (data.triggerId) {
+          this._ackedTriggerId = data.triggerId;
+        }
+        if (!data.triggerId || !this.pendingStartTrigger || this.pendingStartTrigger.triggerId === data.triggerId) {
+          if (this.pendingStartTrigger && this.pendingStartTrigger._flushedLate) {
+            const pathLabel = (channelSource === 'path_b') ? '路徑 B 備援通道' : '路徑 A 直連';
+            this.showToast(`✅ 終點機已確認收到起跑訊號（經 ${pathLabel} 自動校正）`, 'success');
+          }
+          this.pendingStartTrigger = null;
+          this.stopStartResendLoop();
+        }
       }
-    }
-    // Handle host_disarmed notification on Start Sender
-    else if (data.type === 'host_disarmed') {
-      this.showToast('⚠️ 終點平板目前為「已鎖定」狀態，未開始計時！請請終點端按「待命中 (ARM)」解鎖', 'warn');
-    }
-    // Handle IAAF Zero-Test flash signal
-    else if (data.type === 'zero_test_flash') {
-      this.showZeroTestFlash();
+      // Finish Host handles race start signal or zero-test trigger from Sender
+      else if (data.type === 'race_start' || data.type === 'zero_test_trigger') {
+        // Immediately send ACK back across both Path A & Path B so its burst retry knows we received it
+        if (this.peerConnection && this.peerConnection.open && data.triggerId) {
+          try {
+            this.peerConnection.send({ type: 'race_start_ack', triggerId: data.triggerId });
+          } catch (e) {}
+        }
+        this.sendPathBAck(data.triggerId);
+
+        // Deduplicate burst packets for the same triggerId
+        if (data.triggerId && this._lastHandledTriggerId === data.triggerId && this.raceState === 'running') {
+          return;
+        }
+
+        if (data.type === 'race_start' && !this.isArmed) {
+          console.warn('[PeerJS] Received race_start but Finish Host is DISARMED (已鎖定).');
+          this.showToast('🔒 終點處於「已鎖定」狀態，已阻擋起跑訊號！請點擊上方切換為「待命中 (ARM)」', 'warn');
+          if (this.peerConnection && this.peerConnection.open) {
+            try { this.peerConnection.send({ type: 'host_disarmed' }); } catch (e) {}
+          }
+          return;
+        }
+
+        this._lastHandledTriggerId = data.triggerId || String(Date.now());
+        this.lastDeliveredBy = channelSource;
+
+        // v5.7: 優先採用起點換算好的「終點時鐘鳴槍時刻 hostT0」——不論封包走多久、補發幾次，起跑時間都正確
+        const hostNowRx = performance.now();
+        const hostT0Valid = typeof data.hostT0 === 'number' && isFinite(data.hostT0) &&
+          data.hostSession && data.hostSession === this.clockEpochId &&
+          (hostNowRx - data.hostT0) >= -100 && (hostNowRx - data.hostT0) <= 15000;
+
+        let effectiveStartTime;
+        let maxAgeMs = 5000;
+        if (hostT0Valid) {
+          effectiveStartTime = Math.min(data.hostT0, hostNowRx);
+          maxAgeMs = 15000;
+          console.log(`[PeerJS] Received ${data.type} with hostT0 via ${channelSource} (age ${(hostNowRx - data.hostT0).toFixed(1)}ms)`);
+        } else {
+          const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
+            ? data.transitDelay
+            : 5;
+          effectiveStartTime = hostNowRx - transitDelay;
+          maxAgeMs = 8000;
+          console.log(`[PeerJS] Received ${data.type} with transitDelay via ${channelSource}: ${transitDelay.toFixed(1)}ms`);
+        }
+
+        this.handleStartTrigger({
+          source: data.type === 'zero_test_trigger' ? 'zero_test' : 'remote_sender',
+          timestamp: effectiveStartTime,
+          maxAgeMs: maxAgeMs
+        });
+
+        const pathText = (channelSource === 'path_b') ? '（路徑 B 備援通道）' : '（路徑 A 直連）';
+        if (data.type === 'zero_test_trigger') {
+          this.showToast(`⚡ 接收到歸零測試訊號 ${pathText}！計時與狹縫攝影已同步啟動`, 'success');
+        } else {
+          this.showToast(`🚀 接收到起跑訊號 ${pathText}！已同步啟動計時`, 'success');
+        }
+      }
+      // Handle Diagnostics Test Pulse
+      else if (data.type === 'test_pulse') {
+        const ack = {
+          type: 'test_pulse_ack',
+          pulseId: data.pulseId,
+          t1: data.t1,
+          channel: channelSource
+        };
+        if (this.peerConnection && this.peerConnection.open) {
+          try { this.peerConnection.send(ack); } catch(e){}
+        }
+        this.sendPathBSignal(ack);
+        if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
+        this.showToast(`🔔 收到對端連線測試脈衝（經 ${channelSource === 'path_b' ? '路徑 B 備援' : '路徑 A 直連'}）`, 'info');
+      }
+      else if (data.type === 'test_pulse_ack') {
+        const rtt = Math.max(1, performance.now() - data.t1);
+        if (data.channel === 'path_b') {
+          this.testPulseStats.pathBRtt = rtt;
+        } else {
+          this.testPulseStats.pathARtt = rtt;
+        }
+        const labelA = this.testPulseStats.pathARtt ? `路徑 A: ${this.testPulseStats.pathARtt.toFixed(1)}ms` : '路徑 A: 等待中';
+        const labelB = this.testPulseStats.pathBRtt ? `路徑 B: ${this.testPulseStats.pathBRtt.toFixed(1)}ms` : '路徑 B: 等待中';
+        this.showToast(`📊 測試脈衝回覆！${labelA} · ${labelB}`, 'success');
+        this.renderDiagnostics();
+      }
+      // Handle Finish Host arm state received by Start Sender
+      else if (data.type === 'arm_status') {
+        this.hostIsArmed = data.isArmed;
+        if (data.hostSession) {
+          this.lastKnownHostSession = data.hostSession;
+          if (this.pendingStartTrigger) this.flushPendingStartTrigger();
+        }
+        if (this.dom.senderHostArmBadge) {
+          if (data.isArmed) {
+            this.dom.senderHostArmBadge.textContent = '🟢 待命中 (可起跑)';
+            this.dom.senderHostArmBadge.className = 'text-emerald-400 font-bold';
+          } else {
+            this.dom.senderHostArmBadge.textContent = '🔒 已鎖定 (未就緒)';
+            this.dom.senderHostArmBadge.className = 'text-red-400 font-bold animate-pulse';
+          }
+        }
+      }
+      // Handle heat_changed sync between paired devices
+      else if (data.type === 'heat_changed' && data.heatKey) {
+        if (String(data.heatKey) !== String(this.currentHeat)) {
+          this.switchHeat(data.heatKey, false);
+        }
+      }
+      // Handle host_disarmed notification on Start Sender
+      else if (data.type === 'host_disarmed') {
+        this.showToast('⚠️ 終點平板目前為「已鎖定」狀態，未開始計時！請請終點端按「待命中 (ARM)」解鎖', 'warn');
+      }
+      // Handle IAAF Zero-Test flash signal
+      else if (data.type === 'zero_test_flash') {
+        this.showZeroTestFlash();
+      }
+    } catch (err) {
+      console.error('[PeerJS] Incoming data processing error:', err);
     }
   }
 
@@ -3091,7 +3118,8 @@ class ProFinishApp {
       this.dom.diagRtt.textContent = this.meanRtt > 0 ? `${this.meanRtt.toFixed(1)} ms` : '-';
     }
     if (this.dom.diagOffset) {
-      this.dom.diagOffset.textContent = this.ptpSamples.length > 0 ? `${this.clockOffset.toFixed(1)} ms (${this.ptpSamples.length} 筆樣本)` : '-';
+      const count = (this.ptpSamples && this.ptpSamples.length) || this._remotePtpSampleCount || 0;
+      this.dom.diagOffset.textContent = (count > 0 && typeof this.clockOffset === 'number') ? `${this.clockOffset.toFixed(1)} ms (${count} 筆樣本)` : '-';
     }
     if (this.dom.diagPathBStatus) {
       const isB = (this.pathBStatus === 'ready');
