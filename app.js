@@ -479,7 +479,10 @@ class ProFinishApp {
         this.updateCursorPosition(this.currentCursorPixelX || targetX, true);
       });
     } else {
-      // Returning to live camera view ("回攝影"): immediately wake up / heal camera stream if paused or dropped during photo export
+      // Returning to live camera view ("回攝影"): reset viewport & scroll, and wake up camera stream
+      window.scrollTo(0, 0);
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
       this.ensureCameraAlive();
       setTimeout(() => this.ensureCameraAlive(), 250);
       setTimeout(() => this.ensureCameraAlive(), 700);
@@ -616,17 +619,36 @@ class ProFinishApp {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(d => d.kind === 'videoinput');
       
+      let savedCamId = '';
+      try { savedCamId = localStorage.getItem('profinish_selected_camera') || ''; } catch (e) {}
+
       this.dom.cameraSelect.innerHTML = '';
+      let defaultDev = null;
+
       videoDevices.forEach((dev, idx) => {
         const opt = document.createElement('option');
         opt.value = dev.deviceId;
         opt.text = dev.label || `相機 ${idx + 1} (${dev.deviceId.slice(0, 5)})`;
-        if (dev.label.toLowerCase().includes('back') || dev.label.includes('後置') || idx === videoDevices.length - 1) {
-          opt.selected = true;
-          this.selectedCameraId = dev.deviceId;
+        const label = (dev.label || '').toLowerCase();
+        const isBack = label.includes('back') || label.includes('後置') || label.includes('environment');
+        const isUltraWide = label.includes('ultra') || label.includes('超廣角') || label.includes('0.5');
+
+        if (savedCamId && dev.deviceId === savedCamId) {
+          defaultDev = dev;
+        } else if (!defaultDev && isBack && !isUltraWide) {
+          defaultDev = dev;
         }
         this.dom.cameraSelect.appendChild(opt);
       });
+
+      if (!defaultDev && videoDevices.length > 0) {
+        defaultDev = videoDevices[0];
+      }
+
+      if (defaultDev) {
+        this.selectedCameraId = defaultDev.deviceId;
+        this.dom.cameraSelect.value = defaultDev.deviceId;
+      }
 
       await this.startCameraStream(this.selectedCameraId);
     } catch (err) {
@@ -731,15 +753,15 @@ class ProFinishApp {
     const tracks = this.cameraStream ? this.cameraStream.getVideoTracks() : [];
     const mainTrack = tracks[0];
 
-    // 1. If stream or video track was killed/ended/muted by mobile OS during download dialog, restart camera stream
+    // 1. Only restart if stream or video track actually ended (terminated by OS)
+    // NOTE: Do NOT check mainTrack.muted here! Muted is a temporary OS state while file save/share sheet is open.
     if (
       !this.cameraStream ||
       !this.cameraStream.active ||
       !mainTrack ||
-      mainTrack.readyState === 'ended' ||
-      mainTrack.muted
+      mainTrack.readyState === 'ended'
     ) {
-      console.log('[Camera] Healing inactive/ended camera stream...');
+      console.log('[Camera] Healing ended camera stream...');
       this._restartingCamera = true;
       try {
         await this.startCameraStream(this.selectedCameraId);
@@ -757,43 +779,19 @@ class ProFinishApp {
       video.srcObject = this.cameraStream;
     }
 
-    // 2. If video element was paused by mobile browser during file download, resume playback
-    if (video.paused || video.ended || video.readyState < 2) {
+    // 2. If video element was paused by mobile browser during file download/share, simply resume playback
+    if (video.paused || video.readyState < 2) {
       try {
         await video.play();
       } catch (e) {
-        this._restartingCamera = true;
-        try {
-          await this.startCameraStream(this.selectedCameraId);
-        } finally {
-          this._restartingCamera = false;
-        }
-        return;
+        // If play() was blocked (e.g. user gesture needed), don't kill stream
       }
     }
-
-    // 3. Hardware frame-advance watchdog: verify video clock is actually advancing (not stuck on a black frame)
-    const t0 = video.currentTime;
-    clearTimeout(this._camWatchdogTimer);
-    this._camWatchdogTimer = setTimeout(async () => {
-      if (this.role !== 'finish' || document.visibilityState === 'hidden' || this._restartingCamera) return;
-      const curTracks = this.cameraStream ? this.cameraStream.getVideoTracks() : [];
-      const curTrack = curTracks[0];
-      const isFrozen = (video.paused || video.readyState < 2 || video.videoWidth === 0 || video.currentTime === t0);
-      if (!curTrack || curTrack.readyState === 'ended' || isFrozen) {
-        console.warn('[Camera] Watchdog detected frozen/black video feed after returning, restarting stream...');
-        this._restartingCamera = true;
-        try {
-          await this.startCameraStream(this.selectedCameraId);
-        } finally {
-          this._restartingCamera = false;
-        }
-      }
-    }, 380);
   }
 
   switchCamera(deviceId) {
     this.selectedCameraId = deviceId;
+    try { localStorage.setItem('profinish_selected_camera', deviceId); } catch (e) {}
     this.startCameraStream(deviceId);
   }
 
@@ -3804,9 +3802,36 @@ class ProFinishApp {
     this.dom.csvImportModal.classList.add('hidden');
   }
 
-  triggerSafeBlobDownload(blob, fileName) {
+  async triggerSafeBlobDownload(blob, fileName) {
     if (!blob) return;
-    // Mark download in progress so capture-phase beforeunload/pagehide listeners block PeerJS from destroying P2P connection!
+
+    // 1. Mobile devices (iOS/iPadOS Safari, Android): Use native Web Share API to directly save to Photos/Camera Roll
+    // This completely bypasses the browser download prompt, preventing Safari from zooming out or switching camera lens!
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile && navigator.canShare) {
+      try {
+        const file = new File([blob], fileName, { type: blob.type || 'image/png' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: fileName
+          });
+          window.scrollTo(0, 0);
+          this.ensureCameraAlive();
+          return;
+        }
+      } catch (shareErr) {
+        if (shareErr.name === 'AbortError') {
+          // User dismissed the share sheet cleanly
+          window.scrollTo(0, 0);
+          this.ensureCameraAlive();
+          return;
+        }
+        console.warn('[Export] Web Share fallback to download:', shareErr);
+      }
+    }
+
+    // 2. Desktop or unsupported browsers: Use standard <a> download
     this._isDownloadingBlob = true;
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -3816,25 +3841,14 @@ class ProFinishApp {
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
-    // Immediately schedule camera & PeerJS wake-up in case mobile browser paused <video> or socket on download click
-    setTimeout(() => {
-      this.ensureCameraAlive();
-      this.ensureFinishHostPeerAlive();
-    }, 150);
-    setTimeout(() => {
-      this.ensureCameraAlive();
-      this.ensureFinishHostPeerAlive();
-    }, 600);
+
     setTimeout(() => {
       this._isDownloadingBlob = false;
-      this.ensureCameraAlive();
-      this.ensureFinishHostPeerAlive();
-    }, 2000);
-    // Delay revoking URL so mobile/desktop browser download stream does not abort or trigger page unload
-    setTimeout(() => {
       if (a.parentNode) a.parentNode.removeChild(a);
       URL.revokeObjectURL(url);
-    }, 15000);
+      window.scrollTo(0, 0);
+      this.ensureCameraAlive();
+    }, 1200);
   }
 
   downloadSampleCsv() {

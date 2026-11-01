@@ -1,13 +1,31 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 23:05  
+**更新時間**：2026-11-01 23:25  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.11 — 徹底修正「偏差歸零校正 (Zero Offset)」被強制作廢與無效問題)
+## 📋 本次完成事項 (v5.12 — 修正「儲存證明圖」返回後相機畫面變小、防止鏡頭誤切超廣角與行動端原生儲存相簿)
+
+1. **修正「儲存證明圖」返回後攝影畫面變小/變遠問題（根本原因：誤判 `track.muted` 導致相機重啟並退回 0.5x 超廣角鏡頭）**：
+   - 先前在 `ensureCameraAlive()` 中將 `mainTrack.muted` 視為相機失效並強制重啟。但行動端 Safari 在彈出下載對話框時，會將相機暫態設為 `muted`。
+   - 由於對話框阻擋了相機的高幀率約束協商，Safari 在重啟時退回系統預設鏡頭，而在多鏡頭 iPad/iPhone 上，系統預設往往是 **0.5x 超廣角鏡頭 (Ultra-Wide)**，導致畫面整體視角變為極廣角、物體嚴重縮小變遠。
+   - 現已移除 `mainTrack.muted` 的重啟判定，僅在 `mainTrack.readyState === 'ended'` 時才重啟，一般對話框只呼叫 `video.play()` 恢復播放，相機鏡頭與焦段永不跳掉。
+2. **鎖定 1x 標準後置鏡頭並記憶選擇**：
+   - `initCamera` 枚舉鏡頭時，主動排除帶有 `ultra`、`超廣角`、`0.5` 之副鏡頭，預設優先鎖定 1x 標準主鏡頭。
+   - 手動於工具選單切換鏡頭時，自動持久化記錄至 `localStorage`（`profinish_selected_camera`）。
+3. **行動端全面引導使用原生 Web Share API（一鍵存入「照片」相簿）**：
+   - 在 iPad / iPhone / Android 上，點擊「📸 證明圖」改用原生 `navigator.share({ files: [file] })`，彈出系統原生分享選單，裁判可直接點擊「儲存影像」存入本機相簿或透過 AirDrop 秒傳司令台，徹底繞過 Safari 下載提示與視區縮放。
+4. **返回攝影視區與滾動位置重設**：
+   - 在點擊「回攝影」與下載完成後，自動執行 `window.scrollTo(0, 0)`，確保 Safari 視區（Visual Viewport）100% 滿版無黑邊。
+5. **版本升級**：
+   - 升級至 `profinish-v5.12`（`sw.js` 快取 `profinish-v5.12`，`index.html` 引用 `app.js?v=5.12`）。
+
+---
+
+## 📋 前次完成事項 (v5.11 — 徹底修正「偏差歸零校正 (Zero Offset)」被強制作廢與無效問題)
 
 1. **修正致命邏輯衝突：正向 Zero Offset 遭 `effectiveStartTime > nowAfterCalc - 2` 覆蓋抹殺**：
    - 先前在 `handleStartTrigger()` 中，為避免碼錶前幾毫秒顯示負數，有一段強制夾取邏輯：`if (effectiveStartTime > nowAfterCalc - 2) effectiveStartTime = nowAfterCalc - 5;`。
