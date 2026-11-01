@@ -22,14 +22,19 @@ class CloudRelayClient {
     this.reconnectTimer = null;
     this.pingTimer = null;
     this.shouldRun = true;
-    this.brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+    this.brokerList = [
+      'wss://broker.emqx.io:8084/mqtt',
+      'wss://broker.hivemq.com:8884/mqtt'
+    ];
+    this.brokerIndex = 0;
     this.connect();
   }
 
   connect() {
     if (!this.shouldRun || this.ws) return;
     try {
-      this.ws = new WebSocket(this.brokerUrl, 'mqtt');
+      const brokerUrl = this.brokerList[this.brokerIndex];
+      this.ws = new WebSocket(brokerUrl, 'mqtt');
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
@@ -94,6 +99,8 @@ class CloudRelayClient {
         this.ws = null;
         if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
         if (this.onStatusChange) this.onStatusChange('offline', 'none');
+        // Rotate to fallback broker on next connection attempt
+        this.brokerIndex = (this.brokerIndex + 1) % this.brokerList.length;
         if (this.shouldRun && !this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
@@ -108,6 +115,7 @@ class CloudRelayClient {
       this.ws = null;
       this.connected = false;
       if (this.onStatusChange) this.onStatusChange('offline', 'none');
+      this.brokerIndex = (this.brokerIndex + 1) % this.brokerList.length;
       if (this.shouldRun && !this.reconnectTimer) {
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
@@ -583,6 +591,7 @@ class ProFinishApp {
       // v5.7: 切換至起點模式時關閉相機串流，避免起點手機背景持續擷取 60fps 影像導致發熱、耗電與 Wi-Fi 降速
       this.stopCameraStream();
     }
+    this.updateDualPathBadges();
   }
 
   stopCameraStream() {
@@ -2114,6 +2123,7 @@ class ProFinishApp {
       const local = stats.get ? stats.get(pair.localCandidateId) : null;
       const type = (local && (local.candidateType || local.type)) || '';
       this.routeType = type;
+      this.updateDualPathBadges();
       return type;
     } catch (e) {
       return '';
@@ -2332,6 +2342,7 @@ class ProFinishApp {
         if (this.peerConnection === conn) {
           this.peerConnection = null;
         }
+        this.updateDualPathBadges();
         if (this.shouldStayConnected) {
           if (this.dom.senderSyncBadge) {
             this.dom.senderSyncBadge.textContent = '🔄 訊號保持/重連中...';
@@ -2424,6 +2435,7 @@ class ProFinishApp {
 
   scheduleSenderReconnect(delayMs = 500) {
     if (!this.shouldStayConnected || !this.targetRoomCode) return;
+    this.updateDualPathBadges();
     // v5.7: 指數退避 + 隨機抖動（300ms → 600 → 1.2s → 2.4s → 4.8s → 上限 8s），
     // 避免熱點/4G 不穩時狂打 PeerJS 雲端伺服器而被限流。鳴槍待補發時維持快速重連。
     const n = this.senderReconnectAttempts || 0;
@@ -2458,6 +2470,7 @@ class ProFinishApp {
       this.routeType = '';
       this.dom.senderSyncBadge.textContent = '已雙機直連 (校時中)';
       this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
+      this.updateDualPathBadges();
       // Start PTP-Lite Ping-Pong every 500ms
       this.startPtpPingLoop(conn);
       setTimeout(() => this.detectRouteType(conn), 1500);
@@ -2469,11 +2482,18 @@ class ProFinishApp {
         this.flushPendingStartTrigger();
       }
     } else {
+      const sendHostInitialState = () => {
+        try {
+          conn.send({ type: 'arm_status', isArmed: this.isArmed, hostSession: this.clockEpochId });
+          conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
+        } catch (e) {}
+      };
+      if (conn.open) {
+        sendHostInitialState();
+      } else {
+        conn.on('open', sendHostInitialState);
+      }
       this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
-      try {
-        conn.send({ type: 'arm_status', isArmed: this.isArmed, hostSession: this.clockEpochId });
-        conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
-      } catch (e) {}
       setTimeout(async () => {
         await this.detectRouteType(conn);
         const label = this.routeTypeLabel();
@@ -2599,6 +2619,7 @@ class ProFinishApp {
       if (routeLabel && this.dom.senderSyncBadge) {
         this.dom.senderSyncBadge.textContent = `🟢 已雙機直連 (PTP同步 · ${routeLabel})`;
       }
+      this.updateDualPathBadges();
 
       // A start trigger is waiting for a trustworthy clock offset -> flush now with hostT0
       if (this.pendingStartTrigger) this.flushPendingStartTrigger();
@@ -2770,6 +2791,13 @@ class ProFinishApp {
   }
 
   senderSendTrigger() {
+    // 500ms 防抖動：防止平板觸控時 touchstart 與 click 重複觸發兩次鳴槍
+    const triggerPerfNow = performance.now();
+    if (this._lastSenderTriggerTime && (triggerPerfNow - this._lastSenderTriggerTime) < 500) {
+      return;
+    }
+    this._lastSenderTriggerTime = triggerPerfNow;
+
     // If connected and host is locked, prevent false start and alert starter
     if (this.isDataChannelReady(this.peerConnection) && this.hostIsArmed === false) {
       this.showToast('🔒 終點平板為「已鎖定」狀態，請先請終點裁判按「待命中 (ARM)」！', 'warn');
@@ -2777,7 +2805,6 @@ class ProFinishApp {
       return;
     }
 
-    const triggerPerfNow = performance.now();
     const baseTransitDelay = (this.meanRtt && this.meanRtt > 0 && this.meanRtt < 200) ? (this.meanRtt / 2) : 5;
     const triggerId = `trig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
@@ -2841,7 +2868,7 @@ class ProFinishApp {
   /**
    * v5.7: 嘗試送出 pending 起跑訊號。
    * - 時鐘偏移可信 -> 送 hostT0（絕對時刻，最準）
-   * - 剛重連尚未校時 -> 最多等 2 秒讓 PTP 收斂；逾時才退回 transitDelay 補償（8 秒內有效）
+   * - 剛連線校時中 -> 立即送出 transitDelay 封包（絕不因等候 PTP 而延遲實體發射）
    * v5.8: 雙路徑備援——同步發送至 Path A (WebRTC) 與 Path B (Relay)
    */
   flushPendingStartTrigger() {
@@ -2867,9 +2894,7 @@ class ProFinishApp {
       packet.hostT0 = pending.triggerPerfNow + this.clockOffset;
       packet.hostSession = this.ptpHostSession;
     } else {
-      const sinceOpen = now - (this._connOpenedAt || 0);
-      if (sinceOpen < 2000 && this.pathBStatus !== 'ready') return false; // wait for PTP to converge if path B not ready
-      if (elapsedSinceGun >= 8000) return false; // transitDelay fallback no longer trustworthy
+      if (elapsedSinceGun >= 15000) return false;
     }
 
     // Always send across Path B (Relay)
@@ -3011,9 +3036,12 @@ class ProFinishApp {
       } else if (this.routeType === 'relay') {
         textA = 'A: TURN中繼';
         classA = 'px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800 font-bold';
-      } else {
+      } else if (this.routeType === 'srflx' || this.routeType === 'prflx') {
         textA = 'A: 4G穿透';
         classA = 'px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800 font-bold';
+      } else {
+        textA = 'A: 直連中';
+        classA = 'px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold';
       }
     } else if (this.role === 'start' && this.shouldStayConnected) {
       textA = 'A: 重連中';

@@ -1,13 +1,32 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 21:40  
+**更新時間**：2026-11-01 22:30  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.8 — 雙路徑備援 Path B、4G TURN 穿透與連線診斷面板)
+## 📋 本次完成事項 (v5.9 — 修正起點端 A 徽章凍結、發令瞬時發射防阻擋、終點握手時機與多 Broker 容錯)
+
+1. **修正起點端「A: 未連線」徽章凍結問題**：
+   - 起點發令端在連線成功（`setupDataChannel`）、收到 PTP Pong（`handleIncomingPeerData`）、路由偵測完成（`detectRouteType`）、切換角色（`switchRole`）與斷線重連時，全面補上 `this.updateDualPathBadges()` 呼叫。
+   - 解決起點端底層已建立直連，但 UI 仍停留在靜態預設「A: 未連線」的介面不同步問題。
+2. **解除 `flushPendingStartTrigger` 發射阻擋門檻**：
+   - 移除 `if (sinceOpen < 2000 && this.pathBStatus !== 'ready') return false;` 之暫緩阻擋機制。
+   - 若 PTP 尚未收斂（樣本 < 3），依然**立即透過 Path A 與 Path B 雙發**帶有動態 `transitDelay` 補償之起跑封包，確保發令槍按下瞬間訊號 0ms 立即上線，絕不因為校時等候而吞掉起跑訊號。
+3. **終點主機 DataChannel `open` 握手時機修正**：
+   - 在 `setupDataChannel(conn, 'host')` 中加入 `conn.open` 檢查與 `conn.on('open')` 監聽，確保 WebRTC SCTP 通道正式開啟後才發送初始 `arm_status` 與 `hostSession`，避免連線建立瞬間握手封包遺失導致起點機 `lastKnownHostSession` 為 null。
+4. **起點發令按鈕 500ms 防抖動**：
+   - 在 `senderSendTrigger` 加入 500ms 防抖機制，避免平板觸控時 `ontouchstart` 與 `onclick` 300ms 內連續兩次觸發導致封包重複與 ACK 覆蓋。
+5. **Path B 雲端中繼多 Broker 自動輪替 (EMQX + HiveMQ)**：
+   - `CloudRelayClient` 加入輪替伺服器清單（`broker.emqx.io:8084` 與 `broker.hivemq.com:8884`），若電信業者熱點阻擋或特定 Broker 離線，自動切換至備援 Broker 重連。
+6. **版本升級與快取更新**：
+   - 升級至 `profinish-v5.9`（`sw.js` 快取名稱 `profinish-v5.9`，`index.html` 引動 `app.js?v=5.9`）。
+
+---
+
+## 📋 前次完成事項 (v5.8 — 雙路徑備援 Path B、4G TURN 穿透與連線診斷面板)
 
 1. **實裝第四項：雙路徑備援發射與去重 (Path A WebRTC + Path B Cloud/Server Relay)**：
    - 實作原生輕量化 `CloudRelayClient`（MQTT 3.1.1 over WSS），無需任何第三方套件，透過標準 WebSocket 安全通訊協定即時轉送。
