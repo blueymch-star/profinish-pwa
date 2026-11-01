@@ -46,7 +46,15 @@ class ProFinishApp {
     this.currentCursorTimeSec = 0;
 
     // PeerJS & PTP-Lite Sync State
-    this.roomCode = '2026';
+    // v5.7: 每台終點機使用「隨機且持久保存」的 4 位數配對碼，
+    // 避免全球共用 PeerJS 雲端伺服器上大家都搶 profinish-heat-2026 這個 ID。
+    let savedRoomCode = '';
+    try { savedRoomCode = localStorage.getItem('profinish_room_code') || ''; } catch (e) {}
+    if (!/^\d{4}$/.test(savedRoomCode) || savedRoomCode === '2026') {
+      savedRoomCode = String(Math.floor(1000 + Math.random() * 9000));
+      try { localStorage.setItem('profinish_room_code', savedRoomCode); } catch (e) {}
+    }
+    this.roomCode = savedRoomCode;
     this.peer = null;
     this.senderPeer = null;
     this.peerConnection = null;
@@ -64,6 +72,18 @@ class ProFinishApp {
     this.clockOffset = 0; // StartSender time + clockOffset = FinishHost time
     this.meanRtt = 0;
     this.ptpTimer = null;
+    this.ptpSyncedSamples = 0; // PTP samples collected on the CURRENT DataChannel (offset trustworthy when >= 3)
+    this.senderReconnectAttempts = 0; // exponential backoff counter for Start Sender
+    this.hostIdRetryAttempts = 0; // backoff counter for Finish Host 'unavailable-id'
+    this.routeType = ''; // ICE route of the selected candidate pair: host(區網) / srflx / relay
+    // v5.7: 本機 performance.now() 時鐘基準的識別碼。頁面重載或休眠喚醒（iOS 休眠時單調時鐘可能暫停）時更換，
+    // 讓對方知道舊的 PTP 時鐘偏移已失效。
+    this.clockEpochId = `ep-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    this.ptpHostSession = null;
+    this.ptpLocalEpoch = this.clockEpochId;
+    this.lastKnownHostSession = null;
+    this.lastPtpSampleAt = 0;
+    this._startResendTimer = null;
     this.wakeLock = null;
 
     // Web Audio State
@@ -102,11 +122,17 @@ class ProFinishApp {
     this.initSlitCanvasDimensions();
     this.startSlitScanLoop();
 
-    // Initialize Camera for Finish Host
-    this.initCamera();
-
-    // Initialize PeerJS for P2P Wireless Sync
-    this.initFinishHostPeer();
+    // Initialize PeerJS for P2P Wireless Sync & Camera
+    // v5.7: 只有「終點機」角色才啟動相機與註冊 profinish-heat-XXXX；起點機絕不搶占終點 ID，也不空轉相機耗電發熱
+    if (this.dom.myRoomCodeDisplay) this.dom.myRoomCodeDisplay.textContent = this.roomCode;
+    let savedRole = 'finish';
+    try { savedRole = localStorage.getItem('profinish_role') || 'finish'; } catch (e) {}
+    if (savedRole === 'start') {
+      this.switchRole('start');
+    } else {
+      this.initCamera();
+      this.initFinishHostPeer();
+    }
     this.bindPeerKeepAliveEvents();
 
     // Prevent Screen Sleep / Lock during meets
@@ -297,7 +323,29 @@ class ProFinishApp {
   /* ========================================================================== */
 
   switchRole(targetRole) {
+    const prevRole = this.role;
     this.role = targetRole;
+    try { localStorage.setItem('profinish_role', targetRole); } catch (e) {}
+
+    // v5.7 角色隔離：起點機不得持有終點主機 ID；終點機不得殘留起跑發送器連線
+    if (targetRole === 'start') {
+      if (this.peer) {
+        const hostConn = this.peerConnection;
+        try { this.peer.destroy(); } catch (e) {}
+        this.peer = null;
+        if (hostConn && prevRole === 'finish') {
+          try { hostConn.close(); } catch (e) {}
+          if (this.peerConnection === hostConn) this.peerConnection = null;
+        }
+      }
+    } else if (targetRole === 'finish' && prevRole === 'start') {
+      this.shouldStayConnected = false;
+      if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+      if (this.ptpTimer) { clearInterval(this.ptpTimer); this.ptpTimer = null; }
+      if (this.peerConnection) { try { this.peerConnection.close(); } catch (e) {} this.peerConnection = null; }
+      if (this.senderPeer) { try { this.senderPeer.destroy(); } catch (e) {} this.senderPeer = null; }
+      if (!this.peer || this.peer.destroyed) this.initFinishHostPeer();
+    }
 
     if (this.dom.toolsDrawer) {
       this.dom.toolsDrawer.classList.add('translate-x-full');
@@ -327,10 +375,28 @@ class ProFinishApp {
       this.dom.startSenderView.classList.remove('hidden');
       this.dom.finishHostView.classList.add('hidden');
 
-      // Fill in room code if empty
+      // Fill in last-used target room code (the Finish Host's code), never this device's own code
       if (!this.dom.inputRoomCode.value) {
-        this.dom.inputRoomCode.value = this.roomCode;
+        let lastTarget = '';
+        try { lastTarget = localStorage.getItem('profinish_target_room') || ''; } catch (e) {}
+        this.dom.inputRoomCode.value = lastTarget;
       }
+
+      // v5.7: 切換至起點模式時關閉相機串流，避免起點手機背景持續擷取 60fps 影像導致發熱、耗電與 Wi-Fi 降速
+      this.stopCameraStream();
+    }
+  }
+
+  stopCameraStream() {
+    clearTimeout(this._camWatchdogTimer);
+    if (this.cameraStream) {
+      try {
+        this.cameraStream.getTracks().forEach(track => track.stop());
+      } catch (e) {}
+      this.cameraStream = null;
+    }
+    if (this.dom && this.dom.cameraVideo) {
+      this.dom.cameraVideo.srcObject = null;
     }
   }
 
@@ -868,7 +934,8 @@ class ProFinishApp {
     let effectiveStartTime = (typeof eventData.timestamp === 'number') ? eventData.timestamp : hostNow;
 
     // Sanity check: Clamping to prevent cross-device performance.now() epoch mismatch
-    if (effectiveStartTime > hostNow + 250 || (hostNow - effectiveStartTime) > 5000) {
+    const maxAgeMs = (typeof eventData.maxAgeMs === 'number') ? eventData.maxAgeMs : 5000;
+    if (effectiveStartTime > hostNow + 250 || (hostNow - effectiveStartTime) > maxAgeMs) {
       console.warn(`[Timing] effectiveStartTime out of bounds (${effectiveStartTime.toFixed(1)} vs hostNow ${hostNow.toFixed(1)}), clamping`);
       effectiveStartTime = hostNow - 5;
     }
@@ -1761,6 +1828,14 @@ class ProFinishApp {
 
     const checkAndHealConnection = () => {
       if (document.visibilityState === 'hidden') return;
+      // v5.7: 從背景/休眠回來 -> 時鐘基準可能跳動，更換 epoch 讓 PTP 重新校時
+      if (this._wasHidden) {
+        this._wasHidden = false;
+        this.clockEpochId = `ep-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        if (this.role === 'finish' && this.isDataChannelReady(this.peerConnection)) {
+          try { this.peerConnection.send({ type: 'arm_status', isArmed: this.isArmed, hostSession: this.clockEpochId }); } catch (e) {}
+        }
+      }
       // Re-activate Screen WakeLock on wake-up
       this.requestWakeLock();
 
@@ -1780,6 +1855,9 @@ class ProFinishApp {
       }
     };
 
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this._wasHidden = true;
+    });
     document.addEventListener('visibilitychange', checkAndHealConnection);
     window.addEventListener('focus', checkAndHealConnection);
     window.addEventListener('pageshow', checkAndHealConnection);
@@ -1802,15 +1880,59 @@ class ProFinishApp {
     }
     if (conn.peerConnection && conn.peerConnection.iceConnectionState) {
       const ice = conn.peerConnection.iceConnectionState;
-      if (ice === 'disconnected' || ice === 'failed' || ice === 'closed') {
+      if (ice === 'failed' || ice === 'closed') {
         return false;
+      }
+      // v5.7: ICE 'disconnected' 依 WebRTC 規格屬「暫時狀態」，熱點訊號抖動時常在數秒內自行恢復。
+      // 給予 8 秒寬限期，避免主動把可恢復的連線砍掉而造成「斷線-重連」循環。
+      if (ice === 'disconnected') {
+        if (!conn._iceDisconnectedSince) conn._iceDisconnectedSince = performance.now();
+        if (performance.now() - conn._iceDisconnectedSince > 8000) return false;
+      } else {
+        conn._iceDisconnectedSince = 0;
       }
     }
     return true;
   }
 
+  /**
+   * v5.7: 偵測目前 DataChannel 實際走的路徑（host = 熱點區網直連, srflx = 經 NAT 打洞, relay = TURN 中繼）
+   */
+  async detectRouteType(conn) {
+    try {
+      const pc = conn && conn.peerConnection;
+      if (!pc || typeof pc.getStats !== 'function') return '';
+      const stats = await pc.getStats();
+      let pairId = null;
+      stats.forEach((r) => {
+        if (r.type === 'transport' && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId;
+      });
+      let pair = null;
+      stats.forEach((r) => {
+        if (r.type !== 'candidate-pair') return;
+        if ((pairId && r.id === pairId) || (!pairId && r.state === 'succeeded' && (r.nominated || r.selected))) pair = r;
+      });
+      if (!pair) return '';
+      const local = stats.get ? stats.get(pair.localCandidateId) : null;
+      const type = (local && (local.candidateType || local.type)) || '';
+      this.routeType = type;
+      return type;
+    } catch (e) {
+      return '';
+    }
+  }
+
+  routeTypeLabel() {
+    if (this.routeType === 'host') return '區網直連';
+    if (this.routeType === 'srflx' || this.routeType === 'prflx') return '經4G打洞';
+    if (this.routeType === 'relay') return 'TURN中繼';
+    return '';
+  }
+
   ensureFinishHostPeerAlive() {
     if (this.role !== 'finish') return;
+    // A scheduled 'unavailable-id' backoff retry is pending -> don't fight it
+    if (this._hostRetryTimer) return;
     if (!this.peer || this.peer.destroyed) {
       this.initFinishHostPeer();
       return;
@@ -1831,6 +1953,10 @@ class ProFinishApp {
   }
 
   initFinishHostPeer() {
+    // v5.7: 只有終點機角色可以註冊主機 ID（避免起點機搶走 profinish-heat-XXXX）
+    if (this.role !== 'finish') return;
+    if (this._hostRetryTimer) { clearTimeout(this._hostRetryTimer); this._hostRetryTimer = null; }
+
     // Create Peer with designated room ID: profinish-heat-${roomCode}
     const peerId = `profinish-heat-${this.roomCode}`;
     
@@ -1857,6 +1983,7 @@ class ProFinishApp {
 
       this.peer.on('open', (id) => {
         console.log('[PeerJS] Finish Host listening on room peer ID:', id);
+        this.hostIdRetryAttempts = 0;
         if (this.isDataChannelReady(this.peerConnection)) {
           this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
         } else {
@@ -1895,7 +2022,19 @@ class ProFinishApp {
         }
 
         if (err && err.type === 'unavailable-id') {
-          setTimeout(() => this.initFinishHostPeer(), 1500);
+          // ID 仍被伺服器保留（通常是本機剛斷線的舊連線尚未逾時）-> 指數退避重試，上限 6 秒
+          if (this.role !== 'finish') return;
+          const attempt = this.hostIdRetryAttempts++;
+          const delay = Math.min(6000, 1500 * Math.pow(1.5, attempt)) + Math.random() * 400;
+          this.updateSyncBadge('offline', `配對碼 [${this.roomCode}] 註冊中，重試 #${attempt + 1}...`);
+          if (attempt === 6) {
+            this.showToast(`⚠️ 配對碼 [${this.roomCode}] 一直被占用，可能有其他裝置使用相同代碼，建議在設定中「更換配對碼」`, 'warn');
+          }
+          if (this._hostRetryTimer) clearTimeout(this._hostRetryTimer);
+          this._hostRetryTimer = setTimeout(() => {
+            this._hostRetryTimer = null;
+            this.initFinishHostPeer();
+          }, delay);
           return;
         }
 
@@ -1921,10 +2060,13 @@ class ProFinishApp {
 
     this.targetRoomCode = targetCode;
     this.shouldStayConnected = true;
+    try { localStorage.setItem('profinish_target_room', targetCode); } catch (e) {}
+    if (!isAutoReconnect) this.senderReconnectAttempts = 0;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this._reconnectDueAt = 0;
 
     if (!isAutoReconnect && this.dom.btnConnectHost) {
       this.dom.btnConnectHost.textContent = '連線中...';
@@ -1937,17 +2079,27 @@ class ProFinishApp {
       if (this.isDataChannelReady(this.peerConnection)) {
         return;
       }
+      // v5.7: 已有一條 DataChannel 正在握手（ICE 協商中），5 秒內不重複建立，避免多條連線互相干擾
+      if (this._pendingConn && !this._pendingConn.open && (performance.now() - this._pendingConnAt) < 5000) {
+        this.scheduleSenderReconnect(Math.max(300, 5000 - (performance.now() - this._pendingConnAt)));
+        return;
+      }
       if (this.peerConnection) {
         try { this.peerConnection.close(); } catch (e) {}
         this.peerConnection = null;
       }
       const conn = peerInstance.connect(hostPeerId, { reliable: true });
+      this._pendingConn = conn;
+      this._pendingConnAt = performance.now();
 
       conn.on('open', () => {
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
         }
+        this._reconnectDueAt = 0;
+        if (this._pendingConn === conn) this._pendingConn = null;
+        this.senderReconnectAttempts = 0;
         this.peerConnection = conn;
         this.lastPongTime = performance.now();
         if (this.dom.btnConnectHost) {
@@ -1959,6 +2111,7 @@ class ProFinishApp {
       });
 
       const handleDisconnect = () => {
+        if (this._pendingConn === conn) this._pendingConn = null;
         if (this.peerConnection === conn) {
           this.peerConnection = null;
         }
@@ -1985,17 +2138,25 @@ class ProFinishApp {
     };
 
     try {
-      // Reuse existing open senderPeer if available
+      // Reuse existing senderPeer if available (v5.7: 不再「先 reconnect 又立刻 destroy」)
       if (this.senderPeer && !this.senderPeer.destroyed) {
-        if (this.senderPeer.disconnected) {
-          this.senderPeer.reconnect();
-        } else if (this.senderPeer.open) {
+        if (this.senderPeer.open && !this.senderPeer.disconnected) {
           connectDataChannel(this.senderPeer);
           return;
         }
-      }
-
-      if (this.senderPeer && !this.senderPeer.destroyed) {
+        if (this.senderPeer.disconnected && this.senderReconnectAttempts < 3) {
+          // Signaling socket dropped (e.g. 熱點 4G 抖動) -> reconnect the SAME peer; its 'open' event will connect the DataChannel
+          try {
+            this.senderPeer.reconnect();
+            this.scheduleSenderReconnect(2500); // safety net if 'open' never fires
+            return;
+          } catch (e) {}
+        }
+        if (!this.senderPeer.disconnected && !this.senderPeer.open && this.senderReconnectAttempts < 3) {
+          // Still connecting to signaling server -> wait for 'open'
+          this.scheduleSenderReconnect(2500);
+          return;
+        }
         try { this.senderPeer.destroy(); } catch (e) {}
       }
 
@@ -2049,13 +2210,24 @@ class ProFinishApp {
 
   scheduleSenderReconnect(delayMs = 500) {
     if (!this.shouldStayConnected || !this.targetRoomCode) return;
+    // v5.7: 指數退避 + 隨機抖動（300ms → 600 → 1.2s → 2.4s → 4.8s → 上限 8s），
+    // 避免熱點/4G 不穩時狂打 PeerJS 雲端伺服器而被限流。鳴槍待補發時維持快速重連。
+    const n = this.senderReconnectAttempts || 0;
+    const backoff = this.pendingStartTrigger ? 300 : Math.min(8000, 300 * Math.pow(2, n));
+    const actualDelay = Math.max(delayMs, backoff) + Math.random() * 250;
+    // Keep the earliest-due timer: callers like the 500ms PTP loop must not keep postponing a pending reconnect
+    const dueAt = performance.now() + actualDelay;
+    if (this.reconnectTimer && this._reconnectDueAt && this._reconnectDueAt <= dueAt) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this._reconnectDueAt = dueAt;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      this._reconnectDueAt = 0;
       if (this.shouldStayConnected && !this.isDataChannelReady(this.peerConnection)) {
+        this.senderReconnectAttempts = n + 1;
         this.connectToFinishHost(true);
       }
-    }, delayMs);
+    }, actualDelay);
   }
 
   setupDataChannel(conn, roleType) {
@@ -2067,35 +2239,32 @@ class ProFinishApp {
 
     if (roleType === 'sender') {
       this.lastPongTime = performance.now();
+      this._connOpenedAt = performance.now();
+      this.lastKnownHostSession = null; // will be filled by host's arm_status / ptp_pong
+      this.routeType = '';
       this.dom.senderSyncBadge.textContent = '已雙機直連 (校時中)';
       this.dom.senderSyncBadge.className = "text-xs font-mono px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800";
       // Start PTP-Lite Ping-Pong every 500ms
       this.startPtpPingLoop(conn);
+      setTimeout(() => this.detectRouteType(conn), 1500);
 
       // Flush any pending start trigger that was pressed while reconnecting!
+      // (v5.7: 由 flushPendingStartTrigger 統一處理，優先使用 hostT0 絕對時刻，不受補發延遲影響)
       if (this.pendingStartTrigger) {
-        const pending = this.pendingStartTrigger;
-        this.pendingStartTrigger = null;
-        const elapsedSinceGun = performance.now() - pending.triggerPerfNow;
-        if (elapsedSinceGun >= 0 && elapsedSinceGun < 8000) {
-          const compensatedDelay = pending.baseTransitDelay + elapsedSinceGun;
-          try {
-            conn.send({
-              type: pending.type || 'race_start',
-              triggerId: pending.triggerId,
-              transitDelay: compensatedDelay,
-              source: pending.source || 'sender_touch'
-            });
-            this.showToast(`🚀 已補發起跑訊號 (自動補償 ${ (elapsedSinceGun / 1000).toFixed(2) }s 延遲)！`, 'success');
-          } catch (e) {}
-        }
+        this.ensureStartResendLoop();
+        this.flushPendingStartTrigger();
       }
     } else {
       this.updateSyncBadge('connected', `已連線起跑機 · PTP同步中`);
       try {
-        conn.send({ type: 'arm_status', isArmed: this.isArmed });
+        conn.send({ type: 'arm_status', isArmed: this.isArmed, hostSession: this.clockEpochId });
         conn.send({ type: 'heat_changed', heatKey: this.currentHeat });
       } catch (e) {}
+      setTimeout(async () => {
+        await this.detectRouteType(conn);
+        const label = this.routeTypeLabel();
+        if (label && this.peerConnection === conn) this.updateSyncBadge('connected', `已連線起跑機 · ${label}`);
+      }, 1500);
 
       const onHostConnClosed = () => {
         if (this.peerConnection === conn) {
@@ -2113,9 +2282,10 @@ class ProFinishApp {
     if (this.ptpTimer) clearInterval(this.ptpTimer);
     this.ptpTimer = setInterval(() => {
       if (this.isDataChannelReady(conn)) {
-        // Watchdog: if no ptp_pong received for > 2.2s, DataChannel is half-open/frozen -> fast reconnect!
-        if (this.lastPongTime > 0 && (performance.now() - this.lastPongTime > 2200)) {
-          console.warn('[PeerJS] PTP Pong watchdog timeout (>2.2s), reconnecting DataChannel...');
+        // Watchdog (v5.7): 連續約 12 次未收到 pong（> 6 秒）才判定 DataChannel 半開/凍結並重建。
+        // 原本 2.2 秒過於敏感：終點機跑 60fps 狹縫攝影 + 熱點省電抖動時常超過 2 秒，造成自己砍斷連線。
+        if (this.lastPongTime > 0 && (performance.now() - this.lastPongTime > 6000)) {
+          console.warn('[PeerJS] PTP Pong watchdog timeout (>6s), reconnecting DataChannel...');
           this.lastPongTime = performance.now();
           try { conn.close(); } catch (e) {}
           if (this.peerConnection === conn) this.peerConnection = null;
@@ -2149,7 +2319,8 @@ class ProFinishApp {
             type: 'ptp_pong',
             t1: data.t1,
             t2: t2,
-            t3: t3
+            t3: t3,
+            hostSession: this.clockEpochId
           });
         } catch (e) {}
       }
@@ -2167,6 +2338,17 @@ class ProFinishApp {
       // Offset θ = ((t2 - t1) + (t3 - t4)) / 2
       const rtt = (t4 - t1) - (t3 - t2);
       const offset = ((t2 - t1) + (t3 - t4)) / 2;
+
+      // v5.7: 終點機重新整理頁面/休眠喚醒後 performance.now() 基準會改變 -> 舊樣本作廢重新校時
+      if (data.hostSession) {
+        this.lastKnownHostSession = data.hostSession;
+        if (this.ptpHostSession !== data.hostSession || this.ptpLocalEpoch !== this.clockEpochId) {
+          this.ptpSamples = [];
+          this.ptpHostSession = data.hostSession;
+          this.ptpLocalEpoch = this.clockEpochId;
+        }
+      }
+      this.lastPtpSampleAt = t4;
 
       this.ptpSamples.push({ rtt, offset });
       if (this.ptpSamples.length > 20) this.ptpSamples.shift();
@@ -2199,13 +2381,26 @@ class ProFinishApp {
         this.dom.ptpSyncRating.textContent = rating;
         this.dom.ptpSyncRating.className = `${colorClass} font-bold`;
       }
+      const routeLabel = this.routeTypeLabel();
+      if (routeLabel && this.dom.senderSyncBadge) {
+        this.dom.senderSyncBadge.textContent = `🟢 已雙機直連 (PTP同步 · ${routeLabel})`;
+      }
+
+      // A start trigger is waiting for a trustworthy clock offset -> flush now with hostT0
+      if (this.pendingStartTrigger) this.flushPendingStartTrigger();
     }
     // Start Sender receives instant ACK from Finish Host for race_start
     else if (data.type === 'race_start_ack') {
       if (data.triggerId) {
         this._ackedTriggerId = data.triggerId;
       }
-      this.pendingStartTrigger = null;
+      if (!data.triggerId || !this.pendingStartTrigger || this.pendingStartTrigger.triggerId === data.triggerId) {
+        if (this.pendingStartTrigger && this.pendingStartTrigger._flushedLate) {
+          this.showToast('✅ 終點機已確認收到起跑訊號（已依鳴槍時刻自動校正）', 'success');
+        }
+        this.pendingStartTrigger = null;
+        this.stopStartResendLoop();
+      }
     }
     // Finish Host handles race start signal or zero-test trigger from Sender
     else if (data.type === 'race_start' || data.type === 'zero_test_trigger') {
@@ -2232,15 +2427,31 @@ class ProFinishApp {
 
       this._lastHandledTriggerId = data.triggerId || String(Date.now());
 
-      const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
-        ? data.transitDelay
-        : 5;
-      const effectiveStartTime = performance.now() - transitDelay;
-      console.log(`[PeerJS] Received ${data.type} with transitDelay: ${transitDelay.toFixed(1)}ms`);
+      // v5.7: 優先採用起點換算好的「終點時鐘鳴槍時刻 hostT0」——不論封包走多久、補發幾次，起跑時間都正確
+      const hostNowRx = performance.now();
+      const hostT0Valid = typeof data.hostT0 === 'number' && isFinite(data.hostT0) &&
+        data.hostSession && data.hostSession === this.clockEpochId &&
+        (hostNowRx - data.hostT0) >= -100 && (hostNowRx - data.hostT0) <= 15000;
+
+      let effectiveStartTime;
+      let maxAgeMs = 5000;
+      if (hostT0Valid) {
+        effectiveStartTime = Math.min(data.hostT0, hostNowRx);
+        maxAgeMs = 15000;
+        console.log(`[PeerJS] Received ${data.type} with hostT0 (age ${(hostNowRx - data.hostT0).toFixed(1)}ms)`);
+      } else {
+        const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
+          ? data.transitDelay
+          : 5;
+        effectiveStartTime = hostNowRx - transitDelay;
+        maxAgeMs = 8000;
+        console.log(`[PeerJS] Received ${data.type} with transitDelay: ${transitDelay.toFixed(1)}ms`);
+      }
 
       this.handleStartTrigger({
         source: data.type === 'zero_test_trigger' ? 'zero_test' : 'remote_sender',
-        timestamp: effectiveStartTime
+        timestamp: effectiveStartTime,
+        maxAgeMs: maxAgeMs
       });
 
       if (data.type === 'zero_test_trigger') {
@@ -2252,6 +2463,10 @@ class ProFinishApp {
     // Handle Finish Host arm state received by Start Sender
     else if (data.type === 'arm_status') {
       this.hostIsArmed = data.isArmed;
+      if (data.hostSession) {
+        this.lastKnownHostSession = data.hostSession;
+        if (this.pendingStartTrigger) this.flushPendingStartTrigger();
+      }
       if (this.dom.senderHostArmBadge) {
         if (data.isArmed) {
           this.dom.senderHostArmBadge.textContent = '🟢 待命中 (可起跑)';
@@ -2326,56 +2541,116 @@ class ProFinishApp {
     this.showZeroTestFlash();
     if (navigator.vibrate) navigator.vibrate([150, 50, 150]);
 
-    const sendBurstPacket = () => {
-      if (this._ackedTriggerId === triggerId) return true;
-      if (this.isDataChannelReady(this.peerConnection)) {
-        const elapsedSinceGun = Math.max(0, performance.now() - triggerPerfNow);
-        try {
-          this.peerConnection.send({
-            type: 'race_start',
-            triggerId: triggerId,
-            transitDelay: baseTransitDelay + elapsedSinceGun,
-            source: 'sender_touch'
-          });
-          return true;
-        } catch (e) {
-          return false;
-        }
-      }
-      return false;
+    // v5.7: 鳴槍時刻一律先登記為 pending，再由「重送直到 ACK」迴圈負責送達（最長 15 秒）。
+    // 封包內含 hostT0（已換算成終點時鐘的鳴槍時刻），補發多晚都不影響成績。
+    this.pendingStartTrigger = {
+      type: 'race_start',
+      triggerId: triggerId,
+      triggerPerfNow: triggerPerfNow,
+      baseTransitDelay: baseTransitDelay,
+      source: 'sender_touch'
     };
 
-    if (sendBurstPacket()) {
-      // Queue as pending and send 2 fast follow-up burst packets (35ms, 100ms) with dynamically compensated transitDelay
-      // in case the first packet hit a momentary Wi-Fi jitter or OS wake-up after saving a photo!
-      this.pendingStartTrigger = {
-        type: 'race_start',
-        triggerId: triggerId,
-        triggerPerfNow: triggerPerfNow,
-        baseTransitDelay: baseTransitDelay,
-        source: 'sender_touch'
-      };
-      setTimeout(() => sendBurstPacket(), 35);
-      setTimeout(() => {
-        if (!sendBurstPacket() && this._ackedTriggerId !== triggerId && this.shouldStayConnected) {
-          this.connectToFinishHost(true);
-        }
-      }, 100);
-      this.showToast('🚀 起跑訊號已發送！終點機已同步開始計時', 'success');
-    } else if (this.shouldStayConnected && this.targetRoomCode) {
-      // Paired with Finish Host, but connection was momentarily reconnecting -> queue & reconnect immediately!
-      this.pendingStartTrigger = {
-        type: 'race_start',
-        triggerId: triggerId,
-        triggerPerfNow: triggerPerfNow,
-        baseTransitDelay: baseTransitDelay,
-        source: 'sender_touch'
-      };
-      this.connectToFinishHost(true);
-      this.showToast('⚡ 鳴槍已記錄！正在瞬時重連終點機並自動補償起跑時間...', 'info');
+    const connected = this.isDataChannelReady(this.peerConnection);
+    if (connected || (this.shouldStayConnected && this.targetRoomCode)) {
+      this.ensureStartResendLoop();
+      this.flushPendingStartTrigger();
+      if (connected) {
+        this.showToast('🚀 起跑訊號已發送！終點機已同步開始計時', 'success');
+      } else {
+        this.connectToFinishHost(true);
+        this.showToast('⚡ 鳴槍已記錄！正在瞬時重連終點機並自動補償起跑時間...', 'info');
+      }
     } else {
+      this.pendingStartTrigger = null;
       // Non-blocking toast: Never block audio with modal alert!
       this.showToast('💥 鳴槍完成 (獨立發令模式 · 未連線終點機)', 'warn');
+    }
+  }
+
+  /**
+   * v5.7: 目前的 clockOffset 是否可信（同一終點機 session、同一本機 session、樣本 >= 3、最近 2 分鐘內有校時）
+   */
+  canUseHostT0() {
+    return this.ptpSamples.length >= 3 &&
+      !!this.ptpHostSession &&
+      this.ptpHostSession === this.lastKnownHostSession &&
+      this.ptpLocalEpoch === this.clockEpochId &&
+      this.lastPtpSampleAt > 0 && (performance.now() - this.lastPtpSampleAt) < 120000;
+  }
+
+  /**
+   * v5.7: 嘗試送出 pending 起跑訊號。
+   * - 時鐘偏移可信 -> 送 hostT0（絕對時刻，最準）
+   * - 剛重連尚未校時 -> 最多等 2 秒讓 PTP 收斂；逾時才退回 transitDelay 補償（8 秒內有效）
+   */
+  flushPendingStartTrigger() {
+    const pending = this.pendingStartTrigger;
+    if (!pending) return false;
+    if (this._ackedTriggerId === pending.triggerId) {
+      this.pendingStartTrigger = null;
+      this.stopStartResendLoop();
+      return true;
+    }
+    const conn = this.peerConnection;
+    if (!this.isDataChannelReady(conn)) return false;
+
+    const now = performance.now();
+    const elapsedSinceGun = Math.max(0, now - pending.triggerPerfNow);
+    const packet = {
+      type: pending.type || 'race_start',
+      triggerId: pending.triggerId,
+      source: pending.source || 'sender_touch',
+      transitDelay: pending.baseTransitDelay + elapsedSinceGun
+    };
+
+    if (this.canUseHostT0()) {
+      packet.hostT0 = pending.triggerPerfNow + this.clockOffset;
+      packet.hostSession = this.ptpHostSession;
+    } else {
+      const sinceOpen = now - (this._connOpenedAt || 0);
+      if (sinceOpen < 2000) return false; // wait for PTP to converge on this fresh connection
+      if (elapsedSinceGun >= 8000) return false; // transitDelay fallback no longer trustworthy
+    }
+
+    try {
+      conn.send(packet);
+      if (elapsedSinceGun > 300) pending._flushedLate = true;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  ensureStartResendLoop() {
+    if (this._startResendTimer) return;
+    this._startResendTimer = setInterval(() => {
+      const pending = this.pendingStartTrigger;
+      if (!pending || this._ackedTriggerId === pending.triggerId) {
+        this.pendingStartTrigger = null;
+        this.stopStartResendLoop();
+        return;
+      }
+      const elapsed = performance.now() - pending.triggerPerfNow;
+      if (elapsed > 15000) {
+        this.pendingStartTrigger = null;
+        this.stopStartResendLoop();
+        this.showToast('❌ 15 秒內未收到終點機確認，起跑訊號可能未送達！請改用終點手動起跑或重新發令', 'warn');
+        if (navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 300]);
+        return;
+      }
+      if (this.isDataChannelReady(this.peerConnection)) {
+        this.flushPendingStartTrigger();
+      } else if (this.shouldStayConnected) {
+        this.scheduleSenderReconnect(150);
+      }
+    }, 250);
+  }
+
+  stopStartResendLoop() {
+    if (this._startResendTimer) {
+      clearInterval(this._startResendTimer);
+      this._startResendTimer = null;
     }
   }
 
@@ -2601,12 +2876,17 @@ class ProFinishApp {
     if (navigator.vibrate) navigator.vibrate([150, 50, 150]);
 
     if (this.role === 'start') {
-      // Running on Start Sender Phone
-      if (this.peerConnection && this.peerConnection.open) {
-        this.peerConnection.send({
+      // Running on Start Sender Phone (v5.7: 與起跑訊號共用 hostT0 + 重送直到 ACK 機制)
+      if (this.isDataChannelReady(this.peerConnection)) {
+        this.pendingStartTrigger = {
           type: 'zero_test_trigger',
-          transitDelay: transitDelay
-        });
+          triggerId: `zt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          triggerPerfNow: localNow,
+          baseTransitDelay: transitDelay,
+          source: 'zero_test'
+        };
+        this.ensureStartResendLoop();
+        this.flushPendingStartTrigger();
         this.showToast('⚡ 歸零測試訊號已發送！終點機已同步啟動計時與攝影', 'success');
       } else {
         this.showToast('⚡ 歸零閃光已觸發 (未連線終點機)', 'warn');
@@ -2937,11 +3217,14 @@ class ProFinishApp {
 
   generateNewRoomCode() {
     this.roomCode = String(Math.floor(1000 + Math.random() * 9000));
+    try { localStorage.setItem('profinish_room_code', this.roomCode); } catch (e) {}
     this.dom.myRoomCodeDisplay.textContent = this.roomCode;
+    this.hostIdRetryAttempts = 0;
     if (this.peer) {
-      this.peer.destroy();
-      this.initFinishHostPeer();
+      try { this.peer.destroy(); } catch (e) {}
+      this.peer = null;
     }
+    this.initFinishHostPeer();
   }
 
   setSlitWidth(val) {
@@ -3386,9 +3669,26 @@ class ProFinishApp {
 
     try {
       const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/events` : '/api/events';
-      const es = new EventSource(targetUrl);
-      es.onerror = () => { es.close(); };
-      es.onmessage = async (event) => {
+      // v5.7: SSE 斷線後以指數退避自動重連（原本 onerror 直接 close，斷一次就永久失聯）
+      const connectSse = () => {
+        if (this._backendEs) { try { this._backendEs.close(); } catch (e) {} }
+        const es = new EventSource(targetUrl);
+        this._backendEs = es;
+        es.onopen = () => {
+          if (this._sseRetryAttempts > 0) this.fetchBackendMeetData(false);
+          this._sseRetryAttempts = 0;
+        };
+        es.onerror = () => {
+          try { es.close(); } catch (e) {}
+          if (this._backendEs !== es) return;
+          const n = this._sseRetryAttempts = (this._sseRetryAttempts || 0) + 1;
+          const delay = Math.min(30000, 1000 * Math.pow(2, n - 1)) + Math.random() * 500;
+          clearTimeout(this._sseRetryTimer);
+          this._sseRetryTimer = setTimeout(connectSse, delay);
+        };
+        es.onmessage = handleSseMessage;
+      };
+      const handleSseMessage = async (event) => {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'active_heat_changed') {
@@ -3402,6 +3702,7 @@ class ProFinishApp {
           }
         } catch (e) {}
       };
+      connectSse();
     } catch (err) {
       console.warn('SSE backend connection unavailable:', err);
     }

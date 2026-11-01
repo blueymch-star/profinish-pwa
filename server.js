@@ -195,13 +195,20 @@ async function handleRequest(req, res) {
   if (reqUrl === '/api/events' && req.method === 'GET') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-cache, no-transform',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
       'Access-Control-Allow-Origin': '*'
     });
+    // v5.7: 告訴瀏覽器斷線後 2 秒重連
+    res.write('retry: 2000\n\n');
     res.write(`data: ${JSON.stringify({ type: 'connected', activeHeatId: meetData.activeHeatId, activeHeatUid: meetData.activeHeatUid })}\n\n`);
     sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    // v5.7: 每 15 秒送一次 SSE 註解心跳，避免 cloudflared / 代理 / 行動網路 NAT 把閒置連線切斷
+    const heartbeat = setInterval(() => {
+      try { res.write(`: ping ${Date.now()}\n\n`); } catch (e) { clearInterval(heartbeat); sseClients.delete(res); }
+    }, 15000);
+    req.on('close', () => { clearInterval(heartbeat); sseClients.delete(res); });
     return;
   }
 

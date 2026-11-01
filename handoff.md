@@ -1,13 +1,36 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 20:38  
+**更新時間**：2026-11-01 21:18  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.6)
+## 📋 本次完成事項 (v5.7 — 起點 ↔ 終點連線穩定性與熱點環境加固)
+
+1. **角色隔離與防止搶占終點主機 ID (P1 修正)**：
+   - 記憶並還原裝置上次使用的角色（`profinish_role`），只有「終點機 (`finish`)」角色才會註冊 `profinish-heat-XXXX` 房間 ID。
+   - 切換為「起點發令端 (`start`)」時立即銷毀本機的終點主機 Peer，並關閉相機串流（`stopCameraStream()`），避免起點手機搶走終點 ID 或背景跑 60fps 攝影造成發熱降頻。
+2. **專屬持久化配對碼 (P2 修正)**：
+   - 移除全球共用的固定預設碼 `2026`，改為每台終點機首次啟動時自動產生專屬 4 位數配對碼並存入 `localStorage`（`profinish_room_code`）；起點機則自動帶入上次配對的目標代碼（`profinish_target_room`）。
+3. **放寬看門狗與 ICE 斷線寬限期 (P4 修正)**：
+   - PTP Pong 看門狗逾時門檻由 `2.2s` 放寬至 `6.0s`，避免終點機高負載或 iPhone 熱點省電抖動時誤判並自行切斷連線。
+   - WebRTC ICE `disconnected` 狀態給予 `8.0s` 自癒寬限期，符合 WebRTC 暫時斷線自動恢復機制。
+4. **重連邏輯修復與指數退避 (P5 修正)**：
+   - 修正 `senderPeer.disconnected` 時先 `reconnect()` 又立刻被往下 `destroy()` 覆蓋的邏輯錯誤。
+   - 加入 `_pendingConn` 5 秒握手鎖定與指數退避重連（`300ms → 600ms → 1.2s ... 上限 8s`），防止多條連線同時協商互相干擾或被公用信令伺服器限流。
+5. **起跑訊號絕對時刻解耦 (`hostT0`) 與 15 秒可靠重送迴圈**：
+   - 起點送出已換算為終點時鐘基準的鳴槍絕對時刻 `hostT0 = triggerPerfNow + clockOffset`（搭配 `clockEpochId` session 驗證），並每 250ms 自動重送直到收到 `race_start_ack`（最長 15 秒），即使封包在熱點抖動下晚到也完全不影響計時準確度。
+   - 自動偵測並於連線徽章顯示實際傳輸路徑（`區網直連` / `經4G打洞` / `TURN中繼`）。
+6. **電腦後台 SSE 自動重連與心跳 (P6 修正)**：
+   - `server.js` 每 15 秒發送 SSE keep-alive 心跳註解；前端 `EventSource` 斷線後以指數退避自動重連並同步最新賽程。
+7. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v5.7`，更新 `index.html` 腳本引用版本 `app.js?v=5.7`。
+
+---
+
+## 📋 前次完成事項 (v5.6)
 
 1. **實裝「手動自由移動組別排序」功能 (微調按鈕 ⬆️ / ⬇️ ＋ 拖曳排序 Drag-and-Drop)**：
    - 後台左側賽事組別卡片新增：
