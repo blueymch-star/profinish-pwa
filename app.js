@@ -3433,8 +3433,8 @@ class ProFinishApp {
       }
       if (!meet || !Array.isArray(meet.heats) || meet.heats.length === 0) return;
 
-      // Sort heats by schedule order: Date -> Low Grade -> Girls First
-      meet.heats.sort((a, b) => this.compareHeatsBySchedule(a, b));
+      // 依組別 ID / 排列順序排序，完整尊重後台自訂手動移動之順序
+      meet.heats.sort((a, b) => (a.id || 0) - (b.id || 0));
 
       // Remove initial dummy placeholder heat 1 if it has no uid/eventTitle
       if (this.heatData[1] && !this.heatData[1].uid && !this.heatData[1].eventTitle) {
@@ -3482,12 +3482,52 @@ class ProFinishApp {
         };
       });
 
+      // 自動偵測今日比賽日期，優先定位今日賽事之第一組
+      const detectTodayDate = (heats) => {
+        if (!Array.isArray(heats) || heats.length === 0) return null;
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${y}-${m}-${d}`;
+        const todayMMDD = `${m}-${d}`;
+
+        let simDate = '';
+        try {
+          const params = new URLSearchParams(window.location.search);
+          simDate = params.get('testDate') || params.get('simDate') || localStorage.getItem('profinish_sim_date') || '';
+        } catch (e) {}
+
+        const datesInMeet = [...new Set(heats.map(h => (h.raceDate || '').trim()).filter(Boolean))];
+
+        if (simDate) {
+          const found = datesInMeet.find(dt => dt === simDate || dt.endsWith(simDate.slice(-5)));
+          if (found) return found;
+        }
+
+        const matchFull = datesInMeet.find(dt => dt === todayStr);
+        if (matchFull) return matchFull;
+
+        const matchMMDD = datesInMeet.find(dt => dt.endsWith(todayMMDD) || dt.replace(/\//g, '-').endsWith(todayMMDD));
+        if (matchMMDD) return matchMMDD;
+
+        return null;
+      };
+
+      const todayDate = detectTodayDate(meet.heats);
+      let todayFirstHeat = null;
+      if (todayDate) {
+        todayFirstHeat = meet.heats.find(h => (h.raceDate || '').trim() === todayDate);
+      }
+
       if (switchToActive || !this.heatData[this.currentHeat]) {
         let targetHeat = null;
-        if (meet.activeHeatUid) {
+        // 優先：若今天為比賽日，自動預設跳至今日第 1 組！
+        if (todayFirstHeat) {
+          targetHeat = todayFirstHeat;
+        } else if (meet.activeHeatUid) {
           targetHeat = meet.heats.find(h => h.uid === meet.activeHeatUid);
-        }
-        if (!targetHeat && meet.activeHeatId) {
+        } else if (meet.activeHeatId) {
           targetHeat = meet.heats.find(h => String(h.id) === String(meet.activeHeatId));
         }
         if (!targetHeat) {
@@ -3495,6 +3535,9 @@ class ProFinishApp {
         }
         if (targetHeat) {
           this.switchHeat(targetHeat.uid || targetHeat.id, false);
+          if (todayDate) {
+            this.showToast(`📅 系統已自動定位今日賽程 (${todayDate.slice(5).replace('-', '/')})：第 ${targetHeat.id} 組`, 'info');
+          }
         }
       } else {
         const cur = this.heatData[this.currentHeat];

@@ -158,15 +158,20 @@
           class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-red-500" />
       </div>
 
-      <!-- Sort Order Indicator & Renumber Button -->
+      <!-- Sort Order Indicator, Manual Move & Renumber Button -->
       <div class="flex items-center justify-between px-1 py-1 text-[11px] text-slate-400 border-b border-slate-800/60">
-        <span class="flex items-center gap-1 text-slate-400" title="已自動依比賽日期 ➜ 低年級 ➜ 女生優先排序">
+        <button onclick="adminApp.sortByScheduleAndRender()" class="flex items-center gap-1 text-slate-400 hover:text-white font-medium transition cursor-pointer" title="點擊依比賽日期 ➜ 低年級 ➜ 女生優先標準排序">
           <span>⚡</span>
-          <span>排序：日期 ➜ 低年級 ➜ 女生優先</span>
-        </span>
-        <button onclick="adminApp.promptRenumberHeats()" class="text-indigo-400 hover:text-indigo-300 font-bold hover:underline flex items-center gap-0.5" title="將組別編號重新依此排序指派為第1組至第N組">
+          <span>依賽程標準排序</span>
+        </button>
+        <button onclick="adminApp.promptRenumberHeats()" class="text-indigo-400 hover:text-indigo-300 font-bold hover:underline flex items-center gap-0.5 cursor-pointer" title="將組別編號重新依目前排序指派為第1組至第N組">
           <span>🔢</span> 依序重排組號
         </button>
+      </div>
+      <!-- Today Notice Bar -->
+      <div id="todayScheduleNoticeBar" class="hidden px-2.5 py-1.5 rounded-lg bg-emerald-950/80 border border-emerald-700/60 text-[11px] text-emerald-300 flex items-center justify-between font-bold shadow-sm">
+        <span id="todayNoticeText" class="flex items-center gap-1">📅 今日賽事</span>
+        <button onclick="adminApp.selectTodayFirstHeat()" class="underline text-emerald-200 hover:text-white text-[10px] cursor-pointer">跳至今日第1組 ➔</button>
       </div>
 
       <!-- Scrollable Heats List -->
@@ -645,9 +650,121 @@
         return Boolean(heat && heat.roundName && heat.roundName.includes('決賽'));
       }
 
+      detectTodayRaceDate() {
+        if (!this.meetData || !Array.isArray(this.meetData.heats)) return null;
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const todayStr = `${y}-${m}-${d}`;
+        const todayMMDD = `${m}-${d}`;
+
+        let simDate = '';
+        try {
+          const params = new URLSearchParams(window.location.search);
+          simDate = params.get('testDate') || params.get('simDate') || localStorage.getItem('profinish_sim_date') || '';
+        } catch (e) {}
+
+        const datesInMeet = [...new Set(this.meetData.heats.map(h => (h.raceDate || '').trim()).filter(Boolean))];
+
+        if (simDate) {
+          const found = datesInMeet.find(dt => dt === simDate || dt.endsWith(simDate.slice(-5)));
+          if (found) return found;
+        }
+
+        const matchFull = datesInMeet.find(dt => dt === todayStr);
+        if (matchFull) return matchFull;
+
+        const matchMMDD = datesInMeet.find(dt => dt.endsWith(todayMMDD) || dt.replace(/\//g, '-').endsWith(todayMMDD));
+        if (matchMMDD) return matchMMDD;
+
+        return null;
+      }
+
+      selectTodayFirstHeat() {
+        const todayDate = this.detectTodayRaceDate();
+        if (!todayDate) return;
+        const sel = document.getElementById('filterDateSelect');
+        if (sel) {
+          sel.value = todayDate;
+        }
+        const todayHeats = this.meetData.heats.filter(h => (h.raceDate || '').trim() === todayDate);
+        if (todayHeats.length > 0) {
+          const firstHeat = todayHeats[0];
+          this.selectHeat(firstHeat.id, firstHeat.uid);
+          this.meetData.activeHeatId = firstHeat.id;
+          this.meetData.activeHeatUid = firstHeat.uid;
+          this.renderAll();
+        }
+      }
+
+      moveHeat(heatKey, delta) {
+        if (!this.meetData || !Array.isArray(this.meetData.heats)) return;
+        const list = this.meetData.heats;
+        const idx = list.findIndex(h => String(h.uid || h.id) === String(heatKey));
+        if (idx === -1) return;
+        const targetIdx = idx + delta;
+        if (targetIdx < 0 || targetIdx >= list.length) return;
+
+        const [item] = list.splice(idx, 1);
+        list.splice(targetIdx, 0, item);
+
+        // 自動依新排列順序依序更新組號 1 ~ N
+        list.forEach((h, i) => { h.id = i + 1; });
+
+        this.selectedHeatUid = item.uid;
+        this.selectedHeatId = item.id;
+
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      reorderHeatTo(sourceKey, targetKey) {
+        if (!this.meetData || !Array.isArray(this.meetData.heats)) return;
+        const list = this.meetData.heats;
+        const srcIdx = list.findIndex(h => String(h.uid || h.id) === String(sourceKey));
+        const dstIdx = list.findIndex(h => String(h.uid || h.id) === String(targetKey));
+        if (srcIdx === -1 || dstIdx === -1 || srcIdx === dstIdx) return;
+
+        const [item] = list.splice(srcIdx, 1);
+        list.splice(dstIdx, 0, item);
+
+        list.forEach((h, i) => { h.id = i + 1; });
+
+        this.selectedHeatUid = item.uid;
+        this.selectedHeatId = item.id;
+
+        this.saveMeetToServer();
+        this.renderAll();
+      }
+
+      sortByScheduleAndRender() {
+        if (!this.meetData || !Array.isArray(this.meetData.heats)) return;
+        if (confirm('確定要將所有組別重置回官方標準賽程順序嗎？\n\n排序順序：比賽日期 ➜ 低年級 ➜ 女生優先 ➜ 決賽')) {
+          this.sortHeatsBySchedule(true);
+          this.saveMeetToServer();
+          this.renderAll();
+        }
+      }
+
       async init() {
         await this.fetchMeetFromServer();
         this.connectSSE();
+
+        // 自動偵測今日比賽日期，預設切換至今日第 1 組
+        const todayDate = this.detectTodayRaceDate();
+        if (todayDate) {
+          const todayHeats = this.meetData.heats.filter(h => (h.raceDate || '').trim() === todayDate);
+          if (todayHeats.length > 0) {
+            const firstHeat = todayHeats[0];
+            this.selectedHeatUid = firstHeat.uid;
+            this.selectedHeatId = firstHeat.id;
+            this.meetData.activeHeatId = firstHeat.id;
+            this.meetData.activeHeatUid = firstHeat.uid;
+          }
+        }
+
+        this.populateDateFilter(true);
         this.renderAll();
       }
 
@@ -1237,10 +1354,10 @@
         alert(`✓ 已成功將全大會 ${this.meetData.heats.length} 組賽事重新依序編號為：\n第 ${startNum} 組 ～ 第 ${startNum + this.meetData.heats.length - 1} 組！`);
       }
 
-      populateDateFilter() {
+      populateDateFilter(isInitial = false) {
         const sel = document.getElementById('filterDateSelect');
         if (!sel) return;
-        const prev = sel.value || 'ALL';
+        const prev = sel.value || '';
 
         const dateCounts = {};
         let unsetCount = 0;
@@ -1268,10 +1385,26 @@
           sel.appendChild(opt);
         }
 
-        if ([...sel.options].some(o => o.value === prev)) {
-          sel.value = prev;
+        const todayDate = this.detectTodayRaceDate();
+        const noticeBar = document.getElementById('todayScheduleNoticeBar');
+        const noticeText = document.getElementById('todayNoticeText');
+        if (todayDate) {
+          if (noticeBar) {
+            noticeBar.classList.remove('hidden');
+            if (noticeText) noticeText.innerHTML = `<span>📅 今日賽程：${todayDate.slice(5).replace('-', '/')}</span>`;
+          }
         } else {
-          sel.value = 'ALL';
+          if (noticeBar) noticeBar.classList.add('hidden');
+        }
+
+        if (isInitial && todayDate && sortedDates.includes(todayDate)) {
+          sel.value = todayDate;
+        } else if (prev && [...sel.options].some(o => o.value === prev)) {
+          sel.value = prev;
+        } else if (!isInitial && todayDate && sortedDates.includes(todayDate) && !prev) {
+          sel.value = todayDate;
+        } else {
+          sel.value = prev || 'ALL';
         }
       }
 
@@ -1297,9 +1430,6 @@
         const q = (document.getElementById('searchHeatInput')?.value || '').trim().toLowerCase();
         const dateFilter = document.getElementById('filterDateSelect')?.value || 'ALL';
         container.innerHTML = '';
-
-        // Auto sort heats by schedule order: Date -> Low Grade -> Girls First
-        this.sortHeatsBySchedule(false);
 
         let visibleCount = 0;
         let lastDateKey = null;
@@ -1373,7 +1503,8 @@
 
           const card = document.createElement('div');
           card.onclick = () => this.selectHeat(heat.id, heat.uid);
-          card.className = `p-3 rounded-xl border transition cursor-pointer flex flex-col gap-1.5 ${
+          card.draggable = true;
+          card.className = `p-3 rounded-xl border transition cursor-pointer flex flex-col gap-1.5 relative group ${
             isSelected
               ? 'bg-slate-800/90 border-red-500 shadow-md'
               : isFinal
@@ -1381,9 +1512,37 @@
                 : 'bg-slate-950/70 border-slate-800/80 hover:border-slate-700'
           }`;
 
+          // HTML5 Drag and Drop Handlers
+          card.ondragstart = (e) => {
+            e.dataTransfer.setData('text/plain', String(heat.uid || heat.id));
+            e.dataTransfer.effectAllowed = 'move';
+            card.classList.add('opacity-40');
+          };
+          card.ondragend = () => {
+            card.classList.remove('opacity-40');
+            container.querySelectorAll('div').forEach(el => el.classList.remove('border-indigo-500', 'border-t-2', 'border-b-2'));
+          };
+          card.ondragover = (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            card.classList.add('border-indigo-500');
+          };
+          card.ondragleave = () => {
+            card.classList.remove('border-indigo-500');
+          };
+          card.ondrop = (e) => {
+            e.preventDefault();
+            card.classList.remove('border-indigo-500');
+            const sourceKey = e.dataTransfer.getData('text/plain');
+            if (sourceKey && sourceKey !== String(heat.uid || heat.id)) {
+              this.reorderHeatTo(sourceKey, String(heat.uid || heat.id));
+            }
+          };
+
           card.innerHTML = `
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="cursor-grab active:cursor-grabbing text-slate-500 hover:text-slate-200 font-mono text-xs select-none px-1 py-0.5 rounded hover:bg-slate-800" title="按住拖曳可調整順序">⠿</span>
                 <span class="font-mono font-black text-xs px-2 py-0.5 rounded ${isSelected ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'}">
                   第 ${heat.id} 組
                 </span>
@@ -1391,7 +1550,15 @@
                 ${dateLabel}
                 ${isActive ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">📡 場上</span>' : ''}
               </div>
-              ${statusBadge}
+              <div class="flex items-center gap-1">
+                <button onclick="event.stopPropagation(); adminApp.moveHeat('${heat.uid || heat.id}', -1)"
+                        class="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-700 active:bg-indigo-600 text-slate-300 hover:text-white text-[10px] font-bold border border-slate-700/80 transition cursor-pointer"
+                        title="將此組往上移一順位">⬆</button>
+                <button onclick="event.stopPropagation(); adminApp.moveHeat('${heat.uid || heat.id}', 1)"
+                        class="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-slate-700 active:bg-indigo-600 text-slate-300 hover:text-white text-[10px] font-bold border border-slate-700/80 transition cursor-pointer"
+                        title="將此組往下移一順位">⬇</button>
+                ${statusBadge}
+              </div>
             </div>
             <div class="text-xs font-bold text-white truncate">${heat.eventTitle || '未命名項目'}</div>
             <div class="text-[11px] text-slate-400 flex items-center justify-between">
