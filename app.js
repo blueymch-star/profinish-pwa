@@ -213,7 +213,7 @@ class ProFinishApp {
     this.selectedCameraId = '';
     this.torchEnabled = false;
     const savedZero = parseFloat(localStorage.getItem('profinish_zero_offset') || '0');
-    this.zeroOffsetMs = (isFinite(savedZero) && Math.abs(savedZero) <= 150) ? savedZero : 0;
+    this.zeroOffsetMs = (isFinite(savedZero) && Math.abs(savedZero) <= 500) ? savedZero : 0;
     if (this.zeroOffsetMs !== savedZero) {
       localStorage.setItem('profinish_zero_offset', '0');
     }
@@ -1150,8 +1150,8 @@ class ProFinishApp {
       effectiveStartTime = hostNow - 5;
     }
 
-    // Apply user-calibrated Zero Offset (clamped to ±150ms so it never freezes the stopwatch)
-    if (this.zeroOffsetMs && Math.abs(this.zeroOffsetMs) <= 150) {
+    // Apply user-calibrated Zero Offset (clamped to ±500ms so it accommodates camera pipeline latency)
+    if (this.zeroOffsetMs && Math.abs(this.zeroOffsetMs) <= 500) {
       effectiveStartTime += this.zeroOffsetMs;
     }
 
@@ -1161,17 +1161,11 @@ class ProFinishApp {
       effectiveStartTime -= deductSec * 1000;
     }
 
-    // Never allow effectiveStartTime to be in the future (guarantees stopwatch ticks upward immediately at 0ms!)
-    const nowAfterCalc = performance.now();
-    if (effectiveStartTime > nowAfterCalc - 2) {
-      effectiveStartTime = nowAfterCalc - 5;
-    }
-
     // 1. IMMEDIATELY start stopwatch state & update display before any canvas work!
     this.raceStartTime = effectiveStartTime;
     this.raceState = 'running';
     if (this.dom.liveClockDisplay) {
-      const initElapsed = Math.max(0.01, (performance.now() - this.raceStartTime) / 1000);
+      const initElapsed = Math.max(0, (performance.now() - this.raceStartTime) / 1000);
       const secs = Math.floor(initElapsed % 60);
       const centis = Math.floor((initElapsed % 1) * 100);
       this.dom.liveClockDisplay.textContent = `00:${String(secs).padStart(2, '0')}.${String(centis).padStart(2, '0')}`;
@@ -3390,19 +3384,40 @@ class ProFinishApp {
     if (navigator.vibrate) navigator.vibrate([150, 50, 150]);
 
     if (this.role === 'start') {
-      // Running on Start Sender Phone (v5.7: 與起跑訊號共用 hostT0 + 重送直到 ACK 機制)
-      if (this.isDataChannelReady(this.peerConnection)) {
-        this.pendingStartTrigger = {
-          type: 'zero_test_trigger',
-          triggerId: `zt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          triggerPerfNow: localNow,
-          baseTransitDelay: transitDelay,
-          source: 'zero_test'
-        };
+      const triggerId = `zt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      this.pendingStartTrigger = {
+        type: 'zero_test_trigger',
+        triggerId: triggerId,
+        triggerPerfNow: localNow,
+        baseTransitDelay: transitDelay,
+        source: 'zero_test'
+      };
+
+      const initialPacket = {
+        type: 'zero_test_trigger',
+        triggerId: triggerId,
+        triggerPerfNow: localNow,
+        baseTransitDelay: transitDelay,
+        source: 'zero_test'
+      };
+      if (this.canUseHostT0()) {
+        initialPacket.hostT0 = localNow + this.clockOffset;
+        initialPacket.hostSession = this.ptpHostSession;
+      }
+      this.sendPathBSignal(initialPacket);
+
+      const connected = this.isDataChannelReady(this.peerConnection);
+      if (connected || (this.shouldStayConnected && this.targetRoomCode) || this.pathBStatus === 'ready') {
         this.ensureStartResendLoop();
         this.flushPendingStartTrigger();
-        this.showToast('⚡ 歸零測試訊號已發送！終點機已同步啟動計時與攝影', 'success');
+        if (connected) {
+          this.showToast('⚡ 歸零測試訊號已發送！終點機已同步啟動計時與攝影', 'success');
+        } else {
+          this.connectToFinishHost(true);
+          this.showToast('⚡ 歸零測試訊號已透過備援路徑發送，並重連直連通道...', 'info');
+        }
       } else {
+        this.pendingStartTrigger = null;
         this.showToast('⚡ 歸零閃光已觸發 (未連線終點機)', 'warn');
       }
     } else {
@@ -3444,17 +3459,31 @@ class ProFinishApp {
   }
 
   adjustZeroOffset(deltaMs) {
-    this.zeroOffsetMs = Math.max(-150, Math.min(150, Math.round((this.zeroOffsetMs + deltaMs) * 10) / 10));
+    this.zeroOffsetMs = Math.max(-500, Math.min(500, Math.round((this.zeroOffsetMs + deltaMs) * 10) / 10));
     localStorage.setItem('profinish_zero_offset', this.zeroOffsetMs.toFixed(1));
     this.updateZeroOffsetDisplay();
+    // Live update current canvas slice timestamps if an image is loaded
+    if (this.sliceIndex && this.sliceIndex.length > 0) {
+      this.sliceIndex.forEach(slice => {
+        slice.timeSec -= deltaMs / 1000;
+      });
+      this.updateCursorPosition(this.currentCursorPixelX);
+    }
     const sign = this.zeroOffsetMs >= 0 ? '+' : '';
     this.showToast(`🎯 歸零校正偏移量已調整為：${sign}${(this.zeroOffsetMs / 1000).toFixed(3)}s`, 'info');
   }
 
   resetZeroOffset() {
+    const oldOffset = this.zeroOffsetMs;
     this.zeroOffsetMs = 0;
     localStorage.setItem('profinish_zero_offset', '0');
     this.updateZeroOffsetDisplay();
+    if (this.sliceIndex && this.sliceIndex.length > 0 && oldOffset !== 0) {
+      this.sliceIndex.forEach(slice => {
+        slice.timeSec += oldOffset / 1000;
+      });
+      this.updateCursorPosition(this.currentCursorPixelX);
+    }
     this.showToast('🎯 歸零校正偏移量已重設為 +0.000s', 'info');
   }
 
@@ -3464,8 +3493,8 @@ class ProFinishApp {
       return;
     }
     const deltaSec = this.currentCursorTimeSec;
-    // Clamp zero offset to safe hardware range [-150ms, +150ms] so accidental cursor placement never delays future race start!
-    this.zeroOffsetMs = Math.max(-150, Math.min(150, Math.round((this.zeroOffsetMs + deltaSec * 1000) * 10) / 10));
+    // Allow up to ±500ms compensation range
+    this.zeroOffsetMs = Math.max(-500, Math.min(500, Math.round((this.zeroOffsetMs + deltaSec * 1000) * 10) / 10));
     localStorage.setItem('profinish_zero_offset', this.zeroOffsetMs.toFixed(1));
     this.updateZeroOffsetDisplay();
 

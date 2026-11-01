@@ -1,13 +1,31 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 22:48  
+**更新時間**：2026-11-01 23:05  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.10 — 修正終點端接收封包 ReferenceError 致命崩潰、PTP 指標雙向同步與面板聯動)
+## 📋 本次完成事項 (v5.11 — 徹底修正「偏差歸零校正 (Zero Offset)」被強制作廢與無效問題)
+
+1. **修正致命邏輯衝突：正向 Zero Offset 遭 `effectiveStartTime > nowAfterCalc - 2` 覆蓋抹殺**：
+   - 先前在 `handleStartTrigger()` 中，為避免碼錶前幾毫秒顯示負數，有一段強制夾取邏輯：`if (effectiveStartTime > nowAfterCalc - 2) effectiveStartTime = nowAfterCalc - 5;`。
+   - 但由於相機曝光與解碼管線延遲，真實世界的歸零閃光永遠落在 `+0.030s ~ +0.150s` 之後，校正產生的 `zeroOffsetMs` 一律為正數（例如 `+45ms`）。
+   - 當加上正數偏移後，`effectiveStartTime` 自然大於當前時刻，結果**每一筆歸零校正都在起跑時被這段夾取邏輯 100% 抹殺強制歸零**，導致無論如何校正，下次歸零測試閃光位置依然沒有任何改變！
+   - 現已移除該錯誤覆蓋邏輯，並由 `liveClockDisplay` 採用 `Math.max(0, ...)` 平滑保證不顯示負數，徹底解放 `zeroOffsetMs` 的精準補償。
+2. **放寬硬體補償上限由 ±150ms 至 ±500ms**：
+   - iPad / 手機鏡頭於 60fps 狹縫取像管線中，系統延遲常落在 120ms~250ms 之間。先前硬性限制 ±150ms 會導致較高延遲的鏡頭被卡死無法完成校正，且重整頁面時遭重設為 0。現已全面放寬至國際田聯級別的 ±500ms。
+3. **歸零手動微調即時動態反饋 (Live Interactive Adjustment)**：
+   - 點擊工具抽屜中的 `+1ms`、`-1ms`、`+10ms`、`-10ms` 或「重設」時，若當前有拍攝成果畫卷，畫卷上所有時間刻度與游標讀數會**即時同步位移**，裁判可邊按微調按鈕邊觀察紅線與閃光前端的貼合狀況。
+4. **起點端歸零測試訊號支援 Path B 雙路徑**：
+   - 起點端點擊「⚡ 歸零閃光測試」時，比照正式起跑訊號同步向 Path A (WebRTC) 與 Path B (Relay) 發送，保證測試訊號 100% 抵達終點機。
+5. **版本升級**：
+   - 升級至 `profinish-v5.11`（`sw.js` 快取 `profinish-v5.11`，`index.html` 引用 `app.js?v=5.11`）。
+
+---
+
+## 📋 前次完成事項 (v5.10 — 修正終點端接收封包 ReferenceError 致命崩潰、PTP 指標雙向同步與面板聯動)
 
 1. **修正致命 Bug：`handleIncomingPeerData` 參數未宣告 `channelSource` 導致 ReferenceError 崩潰**：
    - 終點機在接收到起點發送的 `race_start` 或 `test_pulse` 封包時，因 `handleIncomingPeerData(data, currentRole)` 缺少第三參數 `channelSource = 'path_a'`，執行到 `this.lastDeliveredBy = channelSource` 時直接噴發 uncaught `ReferenceError: channelSource is not defined`。
