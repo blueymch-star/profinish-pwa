@@ -7,6 +7,176 @@
  * 4. SchoolMeetStore (60m/100m/200m 賽事管理、一鍵道次判讀、官方證明圖與 CSV 匯出)
  */
 
+/**
+ * v5.8: 原生 WebSocket MQTT 3.1.1 輕量雲端中繼通道 (Path B)
+ * 不依賴任何第三方套件，直接透過標準 WSS (8084) 連線公用叢集，提供跨 4G/Wi-Fi 雙路徑備援。
+ */
+class CloudRelayClient {
+  constructor(getRoomCode, onMessage, onStatusChange) {
+    this.getRoomCode = getRoomCode;
+    this.onMessage = onMessage;
+    this.onStatusChange = onStatusChange;
+    this.ws = null;
+    this.connected = false;
+    this.currentSubTopic = null;
+    this.reconnectTimer = null;
+    this.pingTimer = null;
+    this.shouldRun = true;
+    this.brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+    this.connect();
+  }
+
+  connect() {
+    if (!this.shouldRun || this.ws) return;
+    try {
+      this.ws = new WebSocket(this.brokerUrl, 'mqtt');
+      this.ws.binaryType = 'arraybuffer';
+
+      this.ws.onopen = () => {
+        const cid = 'pf_' + Math.random().toString(36).substring(2, 9);
+        const enc = (s) => {
+          const b = new TextEncoder().encode(s);
+          return [(b.length >> 8) & 0xff, b.length & 0xff, ...b];
+        };
+        const payload = [
+          ...enc("MQTT"), // Protocol name
+          4,              // Protocol level 3.1.1
+          2,              // Clean session
+          0, 30,          // Keepalive 30s
+          ...enc(cid)     // Client ID
+        ];
+        const packet = new Uint8Array([0x10, payload.length, ...payload]);
+        this.ws.send(packet);
+      };
+
+      this.ws.onmessage = (event) => {
+        if (!(event.data instanceof ArrayBuffer)) return;
+        const bytes = new Uint8Array(event.data);
+        const type = bytes[0] >> 4;
+
+        if (type === 2) {
+          // CONNACK (0x20)
+          this.connected = true;
+          if (this.onStatusChange) this.onStatusChange('ready', 'cloud_wss');
+          this.subscribeCurrentRoom();
+          if (this.pingTimer) clearInterval(this.pingTimer);
+          this.pingTimer = setInterval(() => {
+            if (this.ws && this.connected) {
+              try { this.ws.send(new Uint8Array([0xc0, 0x00])); } catch(e){}
+            }
+          }, 25000);
+        } else if (type === 3) {
+          // PUBLISH (0x30)
+          try {
+            let idx = 1;
+            let mult = 1, remLen = 0;
+            while (idx < bytes.length) {
+              const b = bytes[idx++];
+              remLen += (b & 0x7f) * mult;
+              mult *= 128;
+              if (!(b & 0x80)) break;
+            }
+            if (idx + 2 <= bytes.length) {
+              const topicLen = (bytes[idx] << 8) | bytes[idx + 1];
+              idx += 2;
+              idx += topicLen;
+              const msgBytes = bytes.slice(idx);
+              const str = new TextDecoder().decode(msgBytes);
+              const data = JSON.parse(str);
+              if (this.onMessage && data) this.onMessage(data);
+            }
+          } catch(e) {}
+        }
+      };
+
+      const handleClose = () => {
+        this.connected = false;
+        this.ws = null;
+        if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+        if (this.onStatusChange) this.onStatusChange('offline', 'none');
+        if (this.shouldRun && !this.reconnectTimer) {
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
+          }, 3500);
+        }
+      };
+
+      this.ws.onclose = handleClose;
+      this.ws.onerror = handleClose;
+    } catch(err) {
+      this.ws = null;
+      this.connected = false;
+      if (this.onStatusChange) this.onStatusChange('offline', 'none');
+      if (this.shouldRun && !this.reconnectTimer) {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, 5000);
+      }
+    }
+  }
+
+  subscribeCurrentRoom() {
+    const code = this.getRoomCode();
+    if (!this.ws || !this.connected || !code) return;
+    const topic = `profinish/room/${code}/#`;
+    if (this.currentSubTopic === topic) return;
+    this.currentSubTopic = topic;
+
+    const enc = (s) => {
+      const b = new TextEncoder().encode(s);
+      return [(b.length >> 8) & 0xff, b.length & 0xff, ...b];
+    };
+    const payload = [
+      0, 1, // Packet ID
+      ...enc(topic),
+      0 // QoS 0
+    ];
+    try {
+      this.ws.send(new Uint8Array([0x82, payload.length, ...payload]));
+    } catch(e){}
+  }
+
+  publish(topic, dataObj) {
+    if (!this.ws || !this.connected) return false;
+    try {
+      const enc = (s) => {
+        const b = new TextEncoder().encode(s);
+        return [(b.length >> 8) & 0xff, b.length & 0xff, ...b];
+      };
+      const topicBytes = enc(topic);
+      const dataBytes = new TextEncoder().encode(JSON.stringify(dataObj));
+      const totalLen = topicBytes.length + dataBytes.length;
+      
+      let lenBytes = [];
+      let rem = totalLen;
+      do {
+        let b = rem % 128;
+        rem = Math.floor(rem / 128);
+        if (rem > 0) b = b | 0x80;
+        lenBytes.push(b);
+      } while (rem > 0);
+
+      const packet = new Uint8Array([0x30, ...lenBytes, ...topicBytes, ...dataBytes]);
+      this.ws.send(packet);
+      return true;
+    } catch(e) {
+      return false;
+    }
+  }
+
+  destroy() {
+    this.shouldRun = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    if (this.ws) {
+      try { this.ws.close(); } catch(e){}
+      this.ws = null;
+    }
+  }
+}
+
 class ProFinishApp {
   constructor() {
     // Current role: 'finish' (終點攝影主機) or 'start' (起跑發送器)
@@ -86,6 +256,15 @@ class ProFinishApp {
     this._startResendTimer = null;
     this.wakeLock = null;
 
+    // Path B (Relay / Backup Channel) & Diagnostics State (v5.8)
+    this.pathBStatus = 'offline'; // 'offline' | 'connecting' | 'ready'
+    this.pathBMode = 'none'; // 'server_sse' | 'cloud_wss'
+    this.pathBClient = null;
+    this.lastDeliveredBy = ''; // 'path_a' | 'path_b'
+    this.lastPathAPacketTime = 0;
+    this.lastPathBPacketTime = 0;
+    this.testPulseStats = { sentAt: 0, pathARtt: null, pathBRtt: null };
+
     // Web Audio State
     this.audioCtx = null;
     this.audioAnalyser = null;
@@ -143,6 +322,10 @@ class ProFinishApp {
 
     // Connect to PC Backend Admin Server for Roster & Results Sync
     this.initBackendSync();
+
+    // v5.8: Initialize Path B (Relay / Backup Channel)
+    this.initPathBRelay();
+    this.updateDualPathBadges();
 
     // Register Service Worker for Offline PWA execution
     if ('serviceWorker' in navigator) {
@@ -235,7 +418,22 @@ class ProFinishApp {
       reviewHeatSubtitle: document.getElementById('reviewHeatSubtitle'),
       btnDist60: document.getElementById('btnDist60'),
       btnDist100: document.getElementById('btnDist100'),
-      btnDist200: document.getElementById('btnDist200')
+      btnDist200: document.getElementById('btnDist200'),
+      // v5.8 Dual-Path Badges & Diagnostics Modal DOM references
+      pathABadgeFinish: document.getElementById('pathABadgeFinish'),
+      pathBBadgeFinish: document.getElementById('pathBBadgeFinish'),
+      pathABadgeSender: document.getElementById('pathABadgeSender'),
+      pathBBadgeSender: document.getElementById('pathBBadgeSender'),
+      diagnosticsModal: document.getElementById('diagnosticsModal'),
+      diagRole: document.getElementById('diagRole'),
+      diagRoomCode: document.getElementById('diagRoomCode'),
+      diagPathAStatus: document.getElementById('diagPathAStatus'),
+      diagRouteType: document.getElementById('diagRouteType'),
+      diagRtt: document.getElementById('diagRtt'),
+      diagOffset: document.getElementById('diagOffset'),
+      diagPathBStatus: document.getElementById('diagPathBStatus'),
+      diagPathBMode: document.getElementById('diagPathBMode'),
+      diagLastDelivered: document.getElementById('diagLastDelivered')
     };
   }
 
@@ -1952,6 +2150,28 @@ class ProFinishApp {
     }
   }
 
+  /**
+   * v5.8: 4G 備案與 STUN/TURN 穿透伺服器配置（Google + Cloudflare STUN + OpenRelay TURN）
+   * 即使身處 4G 對稱型 NAT (Symmetric CGNAT) 或校園隔離網路，亦能自動以 TURN relay 建立連線
+   */
+  getIceServersConfig() {
+    return [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ];
+  }
+
   initFinishHostPeer() {
     // v5.7: 只有終點機角色可以註冊主機 ID（避免起點機搶走 profinish-heat-XXXX）
     if (this.role !== 'finish') return;
@@ -1974,10 +2194,7 @@ class ProFinishApp {
         debug: 1,
         pingInterval: 5000,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
+          iceServers: this.getIceServersConfig()
         }
       });
 
@@ -2166,10 +2383,7 @@ class ProFinishApp {
         debug: 1,
         pingInterval: 5000,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-          ]
+          iceServers: this.getIceServersConfig()
         }
       });
       this.senderPeer = senderPeer;
@@ -2396,7 +2610,8 @@ class ProFinishApp {
       }
       if (!data.triggerId || !this.pendingStartTrigger || this.pendingStartTrigger.triggerId === data.triggerId) {
         if (this.pendingStartTrigger && this.pendingStartTrigger._flushedLate) {
-          this.showToast('✅ 終點機已確認收到起跑訊號（已依鳴槍時刻自動校正）', 'success');
+          const pathLabel = (channelSource === 'path_b') ? '路徑 B 備援通道' : '路徑 A 直連';
+          this.showToast(`✅ 終點機已確認收到起跑訊號（經 ${pathLabel} 自動校正）`, 'success');
         }
         this.pendingStartTrigger = null;
         this.stopStartResendLoop();
@@ -2404,12 +2619,13 @@ class ProFinishApp {
     }
     // Finish Host handles race start signal or zero-test trigger from Sender
     else if (data.type === 'race_start' || data.type === 'zero_test_trigger') {
-      // Immediately send ACK back to Start Sender so its burst retry knows we received it
+      // Immediately send ACK back across both Path A & Path B so its burst retry knows we received it
       if (this.peerConnection && this.peerConnection.open && data.triggerId) {
         try {
           this.peerConnection.send({ type: 'race_start_ack', triggerId: data.triggerId });
         } catch (e) {}
       }
+      this.sendPathBAck(data.triggerId);
 
       // Deduplicate burst packets for the same triggerId
       if (data.triggerId && this._lastHandledTriggerId === data.triggerId && this.raceState === 'running') {
@@ -2426,6 +2642,7 @@ class ProFinishApp {
       }
 
       this._lastHandledTriggerId = data.triggerId || String(Date.now());
+      this.lastDeliveredBy = channelSource;
 
       // v5.7: 優先採用起點換算好的「終點時鐘鳴槍時刻 hostT0」——不論封包走多久、補發幾次，起跑時間都正確
       const hostNowRx = performance.now();
@@ -2438,14 +2655,14 @@ class ProFinishApp {
       if (hostT0Valid) {
         effectiveStartTime = Math.min(data.hostT0, hostNowRx);
         maxAgeMs = 15000;
-        console.log(`[PeerJS] Received ${data.type} with hostT0 (age ${(hostNowRx - data.hostT0).toFixed(1)}ms)`);
+        console.log(`[PeerJS] Received ${data.type} with hostT0 via ${channelSource} (age ${(hostNowRx - data.hostT0).toFixed(1)}ms)`);
       } else {
         const transitDelay = (typeof data.transitDelay === 'number' && data.transitDelay >= 0 && data.transitDelay < 8000)
           ? data.transitDelay
           : 5;
         effectiveStartTime = hostNowRx - transitDelay;
         maxAgeMs = 8000;
-        console.log(`[PeerJS] Received ${data.type} with transitDelay: ${transitDelay.toFixed(1)}ms`);
+        console.log(`[PeerJS] Received ${data.type} with transitDelay via ${channelSource}: ${transitDelay.toFixed(1)}ms`);
       }
 
       this.handleStartTrigger({
@@ -2454,11 +2671,39 @@ class ProFinishApp {
         maxAgeMs: maxAgeMs
       });
 
+      const pathText = (channelSource === 'path_b') ? '（路徑 B 備援通道）' : '（路徑 A 直連）';
       if (data.type === 'zero_test_trigger') {
-        this.showToast('⚡ 接收到歸零測試訊號！計時與狹縫攝影已同步啟動', 'success');
+        this.showToast(`⚡ 接收到歸零測試訊號 ${pathText}！計時與狹縫攝影已同步啟動`, 'success');
       } else {
-        this.showToast('🚀 接收到起跑訊號！已同步啟動計時', 'success');
+        this.showToast(`🚀 接收到起跑訊號 ${pathText}！已同步啟動計時`, 'success');
       }
+    }
+    // Handle Diagnostics Test Pulse
+    else if (data.type === 'test_pulse') {
+      const ack = {
+        type: 'test_pulse_ack',
+        pulseId: data.pulseId,
+        t1: data.t1,
+        channel: channelSource
+      };
+      if (this.peerConnection && this.peerConnection.open) {
+        try { this.peerConnection.send(ack); } catch(e){}
+      }
+      this.sendPathBSignal(ack);
+      if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
+      this.showToast(`🔔 收到對端連線測試脈衝（經 ${channelSource === 'path_b' ? '路徑 B 備援' : '路徑 A 直連'}）`, 'info');
+    }
+    else if (data.type === 'test_pulse_ack') {
+      const rtt = Math.max(1, performance.now() - data.t1);
+      if (data.channel === 'path_b') {
+        this.testPulseStats.pathBRtt = rtt;
+      } else {
+        this.testPulseStats.pathARtt = rtt;
+      }
+      const labelA = this.testPulseStats.pathARtt ? `路徑 A: ${this.testPulseStats.pathARtt.toFixed(1)}ms` : '路徑 A: 等待中';
+      const labelB = this.testPulseStats.pathBRtt ? `路徑 B: ${this.testPulseStats.pathBRtt.toFixed(1)}ms` : '路徑 B: 等待中';
+      this.showToast(`📊 測試脈衝回覆！${labelA} · ${labelB}`, 'success');
+      this.renderDiagnostics();
     }
     // Handle Finish Host arm state received by Start Sender
     else if (data.type === 'arm_status') {
@@ -2551,15 +2796,29 @@ class ProFinishApp {
       source: 'sender_touch'
     };
 
+    // v5.8: 雙路徑備援 (Path A + Path B 同步瞬時發射)
+    const initialPacket = {
+      type: 'race_start',
+      triggerId: triggerId,
+      triggerPerfNow: triggerPerfNow,
+      baseTransitDelay: baseTransitDelay,
+      source: 'sender_touch'
+    };
+    if (this.canUseHostT0()) {
+      initialPacket.hostT0 = triggerPerfNow + this.clockOffset;
+      initialPacket.hostSession = this.ptpHostSession;
+    }
+    this.sendPathBSignal(initialPacket);
+
     const connected = this.isDataChannelReady(this.peerConnection);
-    if (connected || (this.shouldStayConnected && this.targetRoomCode)) {
+    if (connected || (this.shouldStayConnected && this.targetRoomCode) || this.pathBStatus === 'ready') {
       this.ensureStartResendLoop();
       this.flushPendingStartTrigger();
       if (connected) {
         this.showToast('🚀 起跑訊號已發送！終點機已同步開始計時', 'success');
       } else {
         this.connectToFinishHost(true);
-        this.showToast('⚡ 鳴槍已記錄！正在瞬時重連終點機並自動補償起跑時間...', 'info');
+        this.showToast('⚡ 鳴槍已透過備援路徑發送，並瞬時重連直連通道...', 'info');
       }
     } else {
       this.pendingStartTrigger = null;
@@ -2583,6 +2842,7 @@ class ProFinishApp {
    * v5.7: 嘗試送出 pending 起跑訊號。
    * - 時鐘偏移可信 -> 送 hostT0（絕對時刻，最準）
    * - 剛重連尚未校時 -> 最多等 2 秒讓 PTP 收斂；逾時才退回 transitDelay 補償（8 秒內有效）
+   * v5.8: 雙路徑備援——同步發送至 Path A (WebRTC) 與 Path B (Relay)
    */
   flushPendingStartTrigger() {
     const pending = this.pendingStartTrigger;
@@ -2593,7 +2853,6 @@ class ProFinishApp {
       return true;
     }
     const conn = this.peerConnection;
-    if (!this.isDataChannelReady(conn)) return false;
 
     const now = performance.now();
     const elapsedSinceGun = Math.max(0, now - pending.triggerPerfNow);
@@ -2609,17 +2868,23 @@ class ProFinishApp {
       packet.hostSession = this.ptpHostSession;
     } else {
       const sinceOpen = now - (this._connOpenedAt || 0);
-      if (sinceOpen < 2000) return false; // wait for PTP to converge on this fresh connection
+      if (sinceOpen < 2000 && this.pathBStatus !== 'ready') return false; // wait for PTP to converge if path B not ready
       if (elapsedSinceGun >= 8000) return false; // transitDelay fallback no longer trustworthy
     }
 
-    try {
-      conn.send(packet);
-      if (elapsedSinceGun > 300) pending._flushedLate = true;
-      return true;
-    } catch (e) {
-      return false;
+    // Always send across Path B (Relay)
+    this.sendPathBSignal(packet);
+
+    if (this.isDataChannelReady(conn)) {
+      try {
+        conn.send(packet);
+        if (elapsedSinceGun > 300) pending._flushedLate = true;
+        return true;
+      } catch (e) {
+        return false;
+      }
     }
+    return true;
   }
 
   ensureStartResendLoop() {
@@ -2643,6 +2908,9 @@ class ProFinishApp {
         this.flushPendingStartTrigger();
       } else if (this.shouldStayConnected) {
         this.scheduleSenderReconnect(150);
+        this.flushPendingStartTrigger();
+      } else {
+        this.flushPendingStartTrigger();
       }
     }, 250);
   }
@@ -2666,6 +2934,196 @@ class ProFinishApp {
       this.dom.syncDot.className = "w-2 h-2 rounded-full bg-amber-400";
       this.dom.syncBadge.className = "flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-mono bg-slate-800 text-slate-300 border border-slate-700";
     }
+    this.updateDualPathBadges();
+  }
+
+  /* ========================================================================== */
+  /* DUAL-PATH BACKUP (PATH B) & CONNECTION DIAGNOSTICS (v5.8)                  */
+  /* ========================================================================== */
+
+  initPathBRelay() {
+    if (this.pathBClient) {
+      this.pathBClient.destroy();
+      this.pathBClient = null;
+    }
+
+    const getActiveRoom = () => {
+      return (this.role === 'start') ? (this.targetRoomCode || '') : (this.roomCode || '');
+    };
+
+    this.pathBClient = new CloudRelayClient(
+      getActiveRoom,
+      (data) => {
+        if (!data || !data.type) return;
+        this.lastPathBPacketTime = performance.now();
+        this.handleIncomingPeerData(data, this.role, 'path_b');
+      },
+      (status, mode) => {
+        this.pathBStatus = status;
+        this.pathBMode = mode;
+        this.updateDualPathBadges();
+      }
+    );
+  }
+
+  async sendPathBSignal(packet) {
+    this.lastPathBPacketTime = performance.now();
+    let sent = false;
+
+    // 1. Send via Cloud Relay (WSS MQTT Broker)
+    if (this.pathBClient && this.pathBClient.connected) {
+      const targetRoom = (this.role === 'start') ? this.targetRoomCode : this.roomCode;
+      if (targetRoom) {
+        sent = this.pathBClient.publish(`profinish/room/${targetRoom}/signal`, packet) || sent;
+      }
+    }
+
+    // 2. Also send via Local server.js / configuredBackend if available
+    const configuredBackend = localStorage.getItem('profinish_backend_url') || '';
+    if (configuredBackend || !location.hostname.endsWith('github.io')) {
+      const targetUrl = configuredBackend ? `${configuredBackend.replace(/\/+$/, '')}/api/relay-signal` : '/api/relay-signal';
+      fetch(targetUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(packet)
+      }).then(() => { sent = true; }).catch(() => {});
+    }
+
+    return sent;
+  }
+
+  sendPathBAck(triggerId) {
+    if (!triggerId) return;
+    const ackPacket = { type: 'race_start_ack', triggerId: triggerId };
+    this.sendPathBSignal(ackPacket);
+  }
+
+  updateDualPathBadges() {
+    const isAConnected = this.isDataChannelReady(this.peerConnection);
+    
+    // Path A text and styling
+    let textA = 'A: 未連線';
+    let classA = 'px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700';
+    if (isAConnected) {
+      if (this.routeType === 'host') {
+        textA = 'A: 區網直連';
+        classA = 'px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold';
+      } else if (this.routeType === 'relay') {
+        textA = 'A: TURN中繼';
+        classA = 'px-1.5 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800 font-bold';
+      } else {
+        textA = 'A: 4G穿透';
+        classA = 'px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800 font-bold';
+      }
+    } else if (this.role === 'start' && this.shouldStayConnected) {
+      textA = 'A: 重連中';
+      classA = 'px-1.5 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800 animate-pulse';
+    }
+
+    // Path B text and styling
+    let textB = 'B: 備援離線';
+    let classB = 'px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700';
+    if (this.pathBStatus === 'ready') {
+      textB = 'B: 備援就緒';
+      classB = 'px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold';
+    } else if (this.pathBStatus === 'connecting') {
+      textB = 'B: 連線中';
+      classB = 'px-1.5 py-0.5 rounded bg-sky-950 text-sky-400 border border-sky-800';
+    }
+
+    [this.dom.pathABadgeFinish, this.dom.pathABadgeSender].forEach(el => {
+      if (el) { el.textContent = textA; el.className = classA; }
+    });
+    [this.dom.pathBBadgeFinish, this.dom.pathBBadgeSender].forEach(el => {
+      if (el) { el.textContent = textB; el.className = classB; }
+    });
+
+    if (this.dom.diagnosticsModal && !this.dom.diagnosticsModal.classList.contains('hidden')) {
+      this.renderDiagnostics();
+    }
+  }
+
+  renderDiagnostics() {
+    if (this.dom.diagRole) {
+      this.dom.diagRole.textContent = (this.role === 'finish') ? '終點攝影主機 (Finish Host)' : '起點發令端 (Start Sender)';
+    }
+    if (this.dom.diagRoomCode) {
+      this.dom.diagRoomCode.textContent = (this.role === 'finish') ? this.roomCode : (this.targetRoomCode || '未設定');
+    }
+    if (this.dom.diagPathAStatus) {
+      const isA = this.isDataChannelReady(this.peerConnection);
+      this.dom.diagPathAStatus.textContent = isA ? '🟢 已連線 (DataChannel 直連/穿透)' : '🔴 未連線';
+      this.dom.diagPathAStatus.className = isA ? 'font-mono text-emerald-400 font-bold' : 'font-mono text-red-400';
+    }
+    if (this.dom.diagRouteType) {
+      const r = this.routeTypeLabel();
+      this.dom.diagRouteType.textContent = r ? `${r} (${this.routeType || 'unknown'})` : (this.isDataChannelReady(this.peerConnection) ? '協商中' : '尚未取得 ICE 候選');
+    }
+    if (this.dom.diagRtt) {
+      this.dom.diagRtt.textContent = this.meanRtt > 0 ? `${this.meanRtt.toFixed(1)} ms` : '-';
+    }
+    if (this.dom.diagOffset) {
+      this.dom.diagOffset.textContent = this.ptpSamples.length > 0 ? `${this.clockOffset.toFixed(1)} ms (${this.ptpSamples.length} 筆樣本)` : '-';
+    }
+    if (this.dom.diagPathBStatus) {
+      const isB = (this.pathBStatus === 'ready');
+      this.dom.diagPathBStatus.textContent = isB ? '🟢 就緒 (監聽中)' : (this.pathBStatus === 'connecting' ? '🟡 連線中' : '⚪ 離線');
+      this.dom.diagPathBStatus.className = isB ? 'font-mono text-emerald-400 font-bold' : 'font-mono text-slate-400';
+    }
+    if (this.dom.diagPathBMode) {
+      this.dom.diagPathBMode.textContent = (this.pathBMode === 'cloud_wss') ? '雲端 WSS (EMQX Broker)' : (this.pathBMode === 'server_sse' ? '本機 server.js SSE' : '無');
+    }
+    if (this.dom.diagLastDelivered) {
+      this.dom.diagLastDelivered.textContent = this.lastDeliveredBy === 'path_a' ? '路徑 A (直連)' : (this.lastDeliveredBy === 'path_b' ? '路徑 B (備援)' : '尚無紀錄');
+    }
+  }
+
+  openDiagnosticsModal() {
+    if (this.dom.diagnosticsModal) {
+      this.dom.diagnosticsModal.classList.remove('hidden');
+      this.renderDiagnostics();
+    }
+  }
+
+  closeDiagnosticsModal() {
+    if (this.dom.diagnosticsModal) {
+      this.dom.diagnosticsModal.classList.add('hidden');
+    }
+  }
+
+  reconnectAllPaths() {
+    this.showToast('🔄 正在重新整理雙路徑連線...', 'info');
+    if (this.role === 'finish') {
+      this.initFinishHostPeer();
+    } else {
+      this.connectToFinishHost(false);
+    }
+    this.initPathBRelay();
+    setTimeout(() => {
+      this.updateDualPathBadges();
+      this.renderDiagnostics();
+    }, 1000);
+  }
+
+  sendTestPulse() {
+    const pulseId = `pulse-${Date.now()}`;
+    this.testPulseStats = { sentAt: performance.now(), pathARtt: null, pathBRtt: null };
+    const pulsePacket = {
+      type: 'test_pulse',
+      pulseId: pulseId,
+      t1: performance.now(),
+      senderRole: this.role
+    };
+
+    // Send across Path A
+    if (this.isDataChannelReady(this.peerConnection)) {
+      try { this.peerConnection.send(pulsePacket); } catch(e){}
+    }
+    // Send across Path B
+    this.sendPathBSignal(pulsePacket);
+
+    this.showToast('📡 已發送測試脈衝，正在量測雙路徑延遲...', 'info');
+    if (navigator.vibrate) navigator.vibrate([80, 50, 80]);
   }
 
   /* ========================================================================== */
@@ -3677,6 +4135,9 @@ class ProFinishApp {
         es.onopen = () => {
           if (this._sseRetryAttempts > 0) this.fetchBackendMeetData(false);
           this._sseRetryAttempts = 0;
+          this.pathBStatus = 'ready';
+          this.pathBMode = 'server_sse';
+          this.updateDualPathBadges();
         };
         es.onerror = () => {
           try { es.close(); } catch (e) {}
@@ -3685,6 +4146,8 @@ class ProFinishApp {
           const delay = Math.min(30000, 1000 * Math.pow(2, n - 1)) + Math.random() * 500;
           clearTimeout(this._sseRetryTimer);
           this._sseRetryTimer = setTimeout(connectSse, delay);
+          this.pathBStatus = 'offline';
+          this.updateDualPathBadges();
         };
         es.onmessage = handleSseMessage;
       };
@@ -3699,6 +4162,8 @@ class ProFinishApp {
             }
           } else if (msg.type === 'meet_updated') {
             await this.fetchBackendMeetData(false);
+          } else if (msg.type === 'relay_signal' && msg.payload) {
+            this.handleIncomingPeerData(msg.payload, this.role, 'path_b');
           }
         } catch (e) {}
       };

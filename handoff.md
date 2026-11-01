@@ -1,13 +1,36 @@
 # ProFinish 電子計時系統 · 交接工作日誌 (handoff.md)
 
-**更新時間**：2026-11-01 21:18  
+**更新時間**：2026-11-01 21:40  
 **專案網址**：[https://blueymch-star.github.io/profinish-pwa/](https://blueymch-star.github.io/profinish-pwa/)  
 **後台管理**：[https://blueymch-star.github.io/profinish-pwa/admin.html](https://blueymch-star.github.io/profinish-pwa/admin.html)  
 **線上報名對應系統**：[https://blueymch-star.github.io/DCPS-sports-registration/](https://blueymch-star.github.io/DCPS-sports-registration/)  
 
 ---
 
-## 📋 本次完成事項 (v5.7 — 起點 ↔ 終點連線穩定性與熱點環境加固)
+## 📋 本次完成事項 (v5.8 — 雙路徑備援 Path B、4G TURN 穿透與連線診斷面板)
+
+1. **實裝第四項：雙路徑備援發射與去重 (Path A WebRTC + Path B Cloud/Server Relay)**：
+   - 實作原生輕量化 `CloudRelayClient`（MQTT 3.1.1 over WSS），無需任何第三方套件，透過標準 WebSocket 安全通訊協定即時轉送。
+   - 同時支援本機 `server.js` 之 `/api/relay-signal` POST 廣播端點，有筆電或伺服器時透過區網 SSE 進行本地中繼。
+   - 發令鳴槍（`senderSendTrigger`）與歸零測試（`triggerZeroTest`）時，起點端**同時向路徑 A（WebRTC DataChannel 直連/穿透）與路徑 B（中繼備援通道）雙發封包**。
+   - 終點端雙路徑同時監聽，以 `triggerId` 瞬時去重（先到的觸發計時並標註來源路徑，重複到的自動略過），並同步於兩條路徑回傳 `race_start_ack`。
+2. **實裝第五項：4G TURN 穿透配置 (解決電信對稱型 NAT 連線失敗)**：
+   - 在 WebRTC `getIceServersConfig()` 中整合 **Google STUN**、**Cloudflare STUN** 以及 **Metered OpenRelay 免費 TURN 伺服器**（UDP 80/443、TCP 443）。
+   - 解決 iPhone 熱點或校園網路遇到對稱型 NAT（Symmetric CGNAT）無法 P2P 打洞的致命問題，自動退回 TURN 中繼，確保 100% 成功連線。
+3. **實裝第五項：雙路徑即時狀態徽章與連線診斷面板 (Connection Diagnostics UI)**：
+   - 終點主機與起點發令端介面同步新增雙路徑狀態藥丸徽章：
+     - **路徑 A**：`[A: 區網直連]` (host) / `[A: 4G穿透]` (srflx) / `[A: TURN中繼]` (relay) / `[A: 未連線]`
+     - **路徑 B**：`[B: 備援就緒]` / `[B: 連線中]` / `[B: 備援離線]`
+   - 新增點擊式 **「🩺 連線診斷」** 彈出面板：
+     - 即時顯示本機角色、房間配對碼、路徑 A ICE 狀態與選定路由、往返延遲 (RTT)、PTP 時鐘偏差 (ms) 與樣本數、路徑 B 狀態與中繼模式、最後一次送達路徑。
+     - 具備 **「⚡ 測試訊號脈衝 (Test Pulse)」** 按鈕：起跑前裁判可一鍵發送非鳴槍雙路徑測試脈衝，對端發出蜂鳴與震動並回傳量測兩條路徑的即時 RTT。
+     - 具備 **「🔄 重新整理連線」** 按鈕：一鍵重設雙路徑協商與 PTP 校時。
+4. **Service Worker 與版本升級**：
+   - 升級至 `profinish-v5.8`，更新 `index.html` 腳本引用版本 `app.js?v=5.8`。
+
+---
+
+## 📋 前次完成事項 (v5.7)
 
 1. **角色隔離與防止搶占終點主機 ID (P1 修正)**：
    - 記憶並還原裝置上次使用的角色（`profinish_role`），只有「終點機 (`finish`)」角色才會註冊 `profinish-heat-XXXX` 房間 ID。

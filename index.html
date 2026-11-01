@@ -329,16 +329,27 @@
         </div>
       </div>
 
-      <!-- 4-digit Room Code for WebRTC P2P Sync -->
+      <!-- 4-digit Room Code for WebRTC P2P Sync & Dual-Path Status -->
       <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex flex-col gap-2">
-        <span class="text-xs font-semibold text-slate-200">雙機連線房間配對碼</span>
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-slate-200">雙機連線房間配對碼</span>
+          <button onclick="app.openDiagnosticsModal()" class="text-[11px] font-bold text-sky-400 hover:text-sky-300 flex items-center gap-1 cursor-pointer">
+            <span>🩺</span> 連線診斷
+          </button>
+        </div>
         <div class="flex items-center justify-between">
           <span id="myRoomCodeDisplay" class="font-mono text-2xl font-black text-red-400 tracking-widest bg-slate-900 px-3 py-1 rounded-lg border border-slate-700">
             2026
           </span>
-          <div id="syncBadge" class="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
-            <span id="syncDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-            <span id="syncText">等待起跑機連線</span>
+          <div class="flex flex-col items-end gap-1">
+            <div id="syncBadge" class="flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">
+              <span id="syncDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+              <span id="syncText">等待起跑機連線</span>
+            </div>
+            <div class="flex items-center gap-1.5 text-[10px] font-mono">
+              <span id="pathABadgeFinish" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">A: 未連線</span>
+              <span id="pathBBadgeFinish" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">B: 備援就緒</span>
+            </div>
           </div>
         </div>
       </div>
@@ -579,7 +590,17 @@
         </div>
         <div class="flex justify-between items-center text-xs font-mono pt-1">
           <span class="text-slate-400 text-[11px]">同步狀態:</span>
-          <span id="senderSyncBadge" class="text-amber-400 font-bold">未連線</span>
+          <div class="flex items-center gap-1.5">
+            <span id="senderSyncBadge" class="text-amber-400 font-bold">未連線</span>
+            <button onclick="app.openDiagnosticsModal()" class="text-[11px] font-bold text-sky-400 underline ml-1 cursor-pointer">🩺 診斷</button>
+          </div>
+        </div>
+        <div class="flex justify-between items-center text-xs font-mono border-t border-slate-800/60 pt-1.5">
+          <span class="text-slate-400 text-[11px]">雙路徑狀態:</span>
+          <div class="flex items-center gap-1.5 text-[10px]">
+            <span id="pathABadgeSender" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">A: 未連線</span>
+            <span id="pathBBadgeSender" class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">B: 備援就緒</span>
+          </div>
         </div>
         <div class="flex justify-between items-center text-xs font-mono border-t border-slate-800/60 pt-1.5">
           <span class="text-slate-400 text-[11px]">終點待命狀態:</span>
@@ -664,10 +685,81 @@
     </div>
   </div>
 
+  <!-- Connection Diagnostics Modal (v5.8) -->
+  <div id="diagnosticsModal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 flex flex-col gap-4 text-white shadow-2xl">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">🩺</span>
+          <h3 class="font-bold text-sm text-slate-100">雙路徑連線診斷與狀態</h3>
+        </div>
+        <button onclick="app.closeDiagnosticsModal()" class="text-slate-400 hover:text-white text-lg font-bold px-2">✕</button>
+      </div>
+
+      <!-- Live metrics -->
+      <div class="space-y-2.5 text-xs">
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center">
+          <span class="text-slate-400">目前本機角色:</span>
+          <span id="diagRole" class="font-bold text-slate-200">終點機 (Finish Host)</span>
+        </div>
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex justify-between items-center">
+          <span class="text-slate-400">房間配對碼:</span>
+          <span id="diagRoomCode" class="font-mono font-bold text-amber-400 text-sm">-</span>
+        </div>
+
+        <!-- Path A card -->
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+          <div class="flex justify-between items-center font-bold">
+            <span class="text-emerald-400">路徑 A (WebRTC 直連 / TURN 穿透)</span>
+            <span id="diagPathAStatus" class="font-mono text-emerald-400">未連線</span>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span>連線路由類型:</span>
+            <span id="diagRouteType" class="font-mono text-slate-300">-</span>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span>往返延遲 (RTT):</span>
+            <span id="diagRtt" class="font-mono text-slate-300">-</span>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span>PTP 時鐘偏移:</span>
+            <span id="diagOffset" class="font-mono text-slate-300">-</span>
+          </div>
+        </div>
+
+        <!-- Path B card -->
+        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+          <div class="flex justify-between items-center font-bold">
+            <span class="text-sky-400">路徑 B (中繼備援通道)</span>
+            <span id="diagPathBStatus" class="font-mono text-sky-400">就緒</span>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span>中繼模式:</span>
+            <span id="diagPathBMode" class="font-mono text-slate-300">雲端 WSS / 本地 SSE</span>
+          </div>
+          <div class="flex justify-between text-[11px] text-slate-400">
+            <span>最後送達路徑:</span>
+            <span id="diagLastDelivered" class="font-mono text-slate-300">尚無紀錄</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button onclick="app.sendTestPulse()" class="py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 font-bold text-xs text-white shadow flex items-center justify-center gap-1.5">
+          <span>⚡</span> 測試訊號脈衝
+        </button>
+        <button onclick="app.reconnectAllPaths()" class="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 font-bold text-xs text-slate-200 flex items-center justify-center gap-1.5">
+          <span>🔄</span> 重新整理連線
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Fullscreen Flash Overlay for IAAF Zero-Test -->
   <div id="zeroTestFlashOverlay" class="fixed inset-0 bg-white z-[100] hidden"></div>
 
   <!-- Main Application Script -->
-  <script src="./app.js?v=5.7"></script>
+  <script src="./app.js?v=5.8"></script>
 </body>
 </html>

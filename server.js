@@ -328,6 +328,22 @@ async function handleRequest(req, res) {
     return;
   }
 
+  // 6. Relay start / zero-test signals between Start Sender & Finish Host (Path B local relay)
+  if (reqUrl === '/api/relay-signal' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody(req);
+      if (body && body.type) {
+        broadcastEvent('relay_signal', body);
+        sendJson(res, 200, { ok: true, relayed: true, triggerId: body.triggerId });
+      } else {
+        sendJson(res, 400, { error: 'Invalid signal payload' });
+      }
+    } catch (err) {
+      sendJson(res, 500, { error: err.message });
+    }
+    return;
+  }
+
   // =========================================================================
   // STATIC FILE SERVER
   // =========================================================================
